@@ -2,9 +2,7 @@
 /node_modules/
 
 # Generated builds and framework state
-/dist/
-/.vinext/
-/.wrangler/
+/.next/
 next-env.d.ts
 *.tsbuildinfo
 
