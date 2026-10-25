@@ -6,6 +6,9 @@
 next-env.d.ts
 *.tsbuildinfo
 
+# Copied from node_modules by scripts/copy-ocr-assets.mjs
+/public/ocr/
+
 # Test output
 /coverage/
 

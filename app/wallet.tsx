@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./icons";
+import { centerCardCrop, recognizeCard, renderCardCanvas } from "../lib/card-ocr";
+import { detectCardNetwork, parseCardText, type ScannedCard } from "../lib/card-scan";
 import {
   createSafeSharePayload,
   isSafeForQrSharing,
@@ -217,6 +219,20 @@ function itemToDisplayCard(item: WalletItem): WalletDisplayCard {
       raw: item,
     };
   }
+  if (item.type === "id_document") {
+    const d = item as IdDocumentItem;
+    return {
+      id: d.id,
+      name: d.fullName || d.title || "Card",
+      bank: d.issuer || d.documentType || "Other card",
+      last4: d.documentNumber ? d.documentNumber.slice(-4) : "",
+      theme: d.colorTheme || "silver",
+      pattern: d.pattern || "plain",
+      network: d.documentType || "Other",
+      type: "id_document",
+      raw: item,
+    };
+  }
   if (item.type === "bank_account") {
     const b = item as BankAccountItem;
     return {
@@ -248,11 +264,11 @@ function itemToDisplayCard(item: WalletItem): WalletDisplayCard {
   return {
     id: item.id,
     name: item.title,
-    bank: (item as IdDocumentItem).issuingCountry || "ID",
-    last4: (item as IdDocumentItem).documentNumber?.slice(-4) || "",
+    bank: "Other",
+    last4: "",
     theme: item.colorTheme || "silver",
     pattern: item.pattern || "plain",
-    network: "ID",
+    network: item.type === "secure_note" ? "Note" : "Item",
     type: item.type,
     raw: item,
   };
@@ -270,7 +286,7 @@ export default function Wallet() {
   });
   const [page, setPage] = useState<"wallet" | "settings">("wallet");
   const [modal, setModal] = useState<
-    "add" | "card" | "customize" | "edit" | "share" | "scan" | "import" | null
+    "add" | "card" | "customize" | "edit" | "share" | "scan" | "cardscan" | "import" | null
   >(null);
 
   const [schema, setSchema] = useState<EncryptedVaultStorageSchema | null>(() => getRawVaultSchema());
@@ -285,6 +301,7 @@ export default function Wallet() {
   const [isRevealed, setIsRevealed] = useState(false);
 
   const [scannedDraft, setScannedDraft] = useState<Partial<WalletItem> | null>(null);
+  const [cardScanDraft, setCardScanDraft] = useState<ScannedCard | null>(null);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
 
   const suppressCardClick = useRef(false);
@@ -414,6 +431,11 @@ export default function Wallet() {
     }
   };
 
+  const openAddSheet = () => {
+    setCardScanDraft(null);
+    setModal("add");
+  };
+
   const cards: WalletDisplayCard[] = (vaultData?.items || []).map(itemToDisplayCard);
   const current = cards.find((c) => c.id === selected) || cards[0];
 
@@ -489,6 +511,9 @@ export default function Wallet() {
     if (raw.type === "credit_card") {
       text = (raw as CreditCardItem).cardNumber;
       label = "Card Number";
+    } else if (raw.type === "id_document") {
+      text = (raw as IdDocumentItem).documentNumber;
+      label = "Card Number";
     } else if (raw.type === "bank_account") {
       text = (raw as BankAccountItem).accountNumber;
       label = "Account Number";
@@ -508,7 +533,7 @@ export default function Wallet() {
 
   const filteredCards = cards.filter((c) => {
     if (filter === "all") return true;
-    if (filter === "cards") return c.type === "credit_card";
+    if (filter === "cards") return c.type === "credit_card" || c.type === "id_document";
     if (filter === "bank") return c.type === "bank_account";
     if (filter === "upi") return c.type === "upi_handle";
     return true;
@@ -685,7 +710,7 @@ export default function Wallet() {
                   className="header-button"
                   aria-label="Add item"
                   title="Add item"
-                  onClick={() => setModal("add")}
+                  onClick={openAddSheet}
                 >
                   <Icon name="plus" size={23} />
                 </button>
@@ -782,7 +807,7 @@ export default function Wallet() {
                       })}
                     </div>
                   ) : (
-                    <button className="empty-card" onClick={() => setModal("add")}>
+                    <button className="empty-card" onClick={openAddSheet}>
                       <Icon name="plus" size={28} />
                       <span>Add a card or account</span>
                     </button>
@@ -855,7 +880,7 @@ export default function Wallet() {
                       </>
                     ) : (
                       <>
-                        <button className="primary-button" onClick={() => setModal("add")}>
+                        <button className="primary-button" onClick={openAddSheet}>
                           <Icon name="plus" size={19} />
                           Add Card
                         </button>
@@ -1134,7 +1159,12 @@ export default function Wallet() {
       {(modal === "add" || modal === "edit") && (
         <CardEditorSheet
           card={modal === "edit" ? current : undefined}
-          onClose={() => setModal(null)}
+          scan={modal === "add" ? cardScanDraft : null}
+          onScan={modal === "add" ? () => setModal("cardscan") : undefined}
+          onClose={() => {
+            setCardScanDraft(null);
+            setModal(null);
+          }}
           onSave={(savedItem) => {
             const items = vaultData?.items || [];
             const next =
@@ -1143,9 +1173,20 @@ export default function Wallet() {
                 : [savedItem, ...items];
             saveItems(next);
             setSelected(savedItem.id);
+            setCardScanDraft(null);
             setModal(null);
             notify(modal === "edit" ? "Card updated." : "Item saved & encrypted.");
           }}
+        />
+      )}
+
+      {modal === "cardscan" && (
+        <CardScanSheet
+          onResult={(scan) => {
+            setCardScanDraft(scan);
+            setModal("add");
+          }}
+          onClose={() => setModal(null)}
         />
       )}
 
@@ -1222,10 +1263,12 @@ function CardDetailsSheet({
   const isBank = raw.type === "bank_account";
   const isCard = raw.type === "credit_card";
   const isUpi = raw.type === "upi_handle";
+  const isDocument = raw.type === "id_document";
 
   const bank = isBank ? (raw as BankAccountItem) : null;
   const cc = isCard ? (raw as CreditCardItem) : null;
   const upi = isUpi ? (raw as UpiHandleItem) : null;
+  const document = isDocument ? (raw as IdDocumentItem) : null;
 
   return (
     <Sheet title="Card details" onClose={onClose}>
@@ -1237,7 +1280,7 @@ function CardDetailsSheet({
           <strong>{card.name}</strong>
         </div>
         <div>
-          <span>Label</span>
+          <span>{isDocument ? "Issuer" : "Label"}</span>
           <strong>{card.bank}</strong>
         </div>
 
@@ -1294,6 +1337,29 @@ function CardDetailsSheet({
             <span>Payment ID</span>
             <strong>{upi.handle}</strong>
           </div>
+        )}
+
+        {document && (
+          <>
+            <div>
+              <span>Type</span>
+              <strong>{document.documentType}</strong>
+            </div>
+            <div>
+              <span>Card number</span>
+              <strong>
+                {isRevealed
+                  ? document.documentNumber
+                  : `•••• ${document.documentNumber.slice(-4) || "••••"}`}
+              </strong>
+            </div>
+            {document.expiryDate && (
+              <div>
+                <span>Expiry</span>
+                <strong>{document.expiryDate}</strong>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -1452,42 +1518,79 @@ function CardStyleSheet({
 // ============================================================================
 function CardEditorSheet({
   card,
+  scan,
+  onScan,
   onClose,
   onSave,
 }: {
   card?: WalletDisplayCard;
+  scan?: ScannedCard | null;
+  onScan?: () => void;
   onClose: () => void;
   onSave: (item: WalletItem) => void;
 }) {
   const existingRaw = card?.raw;
-  const [type, setType] = useState<WalletItemType>(existingRaw?.type || "bank_account");
-  const [name, setName] = useState(card?.name || "");
-  const [bank, setBank] = useState(card?.bank || "");
-  const [number, setNumber] = useState(
-    existingRaw?.type === "credit_card"
-      ? (existingRaw as CreditCardItem).cardNumber
-      : existingRaw?.type === "bank_account"
-      ? (existingRaw as BankAccountItem).accountNumber
-      : existingRaw?.type === "upi_handle"
-      ? (existingRaw as UpiHandleItem).handle
-      : ""
+  const existingCard = existingRaw?.type === "credit_card" ? (existingRaw as CreditCardItem) : null;
+  const existingDocument =
+    existingRaw?.type === "id_document" ? (existingRaw as IdDocumentItem) : null;
+  const scannedType = scan ? (scan.kind === "other" ? "id_document" : "credit_card") : null;
+  const [type, setType] = useState<WalletItemType>(
+    existingRaw?.type || scannedType || "bank_account"
   );
-  const [theme, setTheme] = useState(card?.theme || "ocean");
-  const [pattern, setPattern] = useState(card?.pattern || "orbit");
+  const [name, setName] = useState(card?.name || scan?.holder || scan?.issuer || "");
+  const [bank, setBank] = useState(card?.bank || scan?.issuer || "");
+  const [number, setNumber] = useState(
+    existingCard?.cardNumber ||
+      (existingRaw?.type === "bank_account"
+        ? (existingRaw as BankAccountItem).accountNumber
+        : existingRaw?.type === "upi_handle"
+        ? (existingRaw as UpiHandleItem).handle
+        : existingDocument?.documentNumber) ||
+      scan?.number ||
+      ""
+  );
+  const [theme, setTheme] = useState(
+    card?.theme || (scan ? "graphite" : "ocean")
+  );
+  const [pattern, setPattern] = useState(
+    card?.pattern || (scan?.kind === "other" ? "plain" : "orbit")
+  );
   const [network, setNetwork] = useState(
-    card?.network || (existingRaw?.type === "credit_card" ? "Debit" : "Savings")
+    card?.network ||
+      existingCard?.cardType ||
+      existingDocument?.documentType ||
+      (scan
+        ? scan.kind === "other"
+          ? scan.documentType
+          : scan.cardType
+        : "Savings")
   );
 
   // Auxiliary fields
-  const [expMonth, setExpMonth] = useState((existingRaw as CreditCardItem)?.expiryMonth || "12");
-  const [expYear, setExpYear] = useState((existingRaw as CreditCardItem)?.expiryYear || "28");
-  const [cvv, setCvv] = useState((existingRaw as CreditCardItem)?.cvv || "782");
+  const [expMonth, setExpMonth] = useState(existingCard?.expiryMonth || scan?.expiryMonth || "");
+  const [expYear, setExpYear] = useState(existingCard?.expiryYear || scan?.expiryYear || "");
+  const [cvv, setCvv] = useState(existingCard?.cvv || "");
   const [routing, setRouting] = useState((existingRaw as BankAccountItem)?.routingOrIfsc || "");
+  const [expiryDate, setExpiryDate] = useState(
+    existingDocument?.expiryDate ||
+      (scan?.kind === "other" && scan.expiryMonth
+        ? `${scan.expiryMonth}/${scan.expiryYear}`
+        : "")
+  );
+  const [numberUnverified, setNumberUnverified] = useState(scan?.numberValid === false);
 
   const previewCard: WalletDisplayCard = {
     id: card?.id || "preview",
     name: name || "Card Name",
-    bank: bank || (type === "credit_card" ? "Card" : type === "upi_handle" ? "Payment" : "Bank"),
+    bank:
+      bank ||
+      (type === "credit_card"
+        ? "Card"
+        : type === "upi_handle"
+        ? "Payment"
+        : type === "id_document"
+        ? "Other card"
+        : "Bank"),
     last4: number ? number.slice(-4) : "••••",
     theme,
     pattern,
@@ -1503,7 +1606,7 @@ function CardEditorSheet({
       ...(existingRaw || {}),
       id,
       type,
-      title: name.trim() || bank.trim(),
+      title: name.trim() || bank.trim() || "Other card",
       colorTheme: theme,
       pattern,
       isFavorite: existingRaw?.isFavorite || false,
@@ -1522,12 +1625,18 @@ function CardEditorSheet({
     } else if (type === "credit_card") {
       base.bankOrIssuer = bank.trim();
       base.cardholderName = name.trim().toUpperCase();
-      base.cardNumber = number.replace(/\s+/g, "");
+      base.cardNumber = number.replace(/[\s-]/g, "");
       base.expiryMonth = expMonth;
       base.expiryYear = expYear;
       base.cvv = cvv;
-      base.network = "Visa";
+      base.network = detectCardNetwork(number);
       base.cardType = network;
+    } else if (type === "id_document") {
+      base.documentType = network;
+      base.documentNumber = number.trim();
+      base.fullName = name.trim();
+      base.issuer = bank.trim() || undefined;
+      base.expiryDate = expiryDate.trim() || undefined;
     } else if (type === "upi_handle") {
       base.provider = bank.trim() || "Payment";
       base.accountHolderName = name.trim();
@@ -1542,14 +1651,37 @@ function CardEditorSheet({
       <form onSubmit={handleSubmit}>
         <WalletCard card={previewCard} compact />
 
+        {!card && onScan && (
+          <button type="button" className="scan-invite" onClick={onScan}>
+            <span className="scan-invite-icon">
+              <Icon name="camera" size={20} />
+            </span>
+            <span>
+              <strong>Scan a card</strong>
+              <small>Fill it in from your camera or a photo</small>
+            </span>
+            <Icon name="chevron" size={16} />
+          </button>
+        )}
+
+        {scan && (
+          <p className={`notice scan-notice ${numberUnverified ? "scan-warning" : ""}`}>
+            <Icon name="info" />
+            {numberUnverified
+              ? "Check the card number: it did not pass the checksum. OCR can misread a digit."
+              : "Scanned on this device. Check each field before saving."}
+          </p>
+        )}
+
         {!card && (
           <div className="editor-section">
             <span className="field-label">Type</span>
             <div className="segmented">
               {[
-                { id: "bank_account", label: "Bank account" },
+                { id: "bank_account", label: "Bank" },
                 { id: "credit_card", label: "Card" },
                 { id: "upi_handle", label: "Payment" },
+                { id: "id_document", label: "Other card" },
               ].map((t) => (
                 <button
                   type="button"
@@ -1558,7 +1690,13 @@ function CardEditorSheet({
                   onClick={() => {
                     setType(t.id as WalletItemType);
                     setNetwork(
-                      t.id === "bank_account" ? "Savings" : t.id === "credit_card" ? "Debit" : "Payment"
+                      t.id === "bank_account"
+                        ? "Savings"
+                        : t.id === "credit_card"
+                        ? "Debit"
+                        : t.id === "id_document"
+                        ? "Other"
+                        : "Payment"
                     );
                   }}
                 >
@@ -1583,6 +1721,8 @@ function CardEditorSheet({
             ? "Cardholder name"
             : type === "bank_account"
             ? "Account holder name"
+            : type === "id_document"
+            ? "Name on card"
             : "Name / Label"}
           <input
             required
@@ -1598,9 +1738,11 @@ function CardEditorSheet({
               ? "Bank or issuer"
               : type === "bank_account"
               ? "Bank name"
+              : type === "id_document"
+              ? "Issuer / organization"
               : "Payment app"}
             <input
-              required
+              required={type !== "id_document"}
               maxLength={30}
               value={bank}
               onChange={(e) => setBank(e.target.value)}
@@ -1620,7 +1762,13 @@ function CardEditorSheet({
                 <>
                   <option>Debit</option>
                   <option>Credit</option>
-                  <option>Card</option>
+                  <option>Prepaid</option>
+                </>
+              ) : type === "id_document" ? (
+                <>
+                  <option>Campus card</option>
+                  <option>Membership</option>
+                  <option>Other</option>
                 </>
               ) : (
                 <option>Payment</option>
@@ -1634,11 +1782,18 @@ function CardEditorSheet({
             ? "Card number (encrypted)"
             : type === "bank_account"
             ? "Account number"
+            : type === "id_document"
+            ? "Card / member number"
             : "Payment ID / Handle"}
           <input
             required
+            inputMode={type === "credit_card" ? "numeric" : undefined}
+            autoComplete="off"
             value={number}
-            onChange={(e) => setNumber(e.target.value)}
+            onChange={(e) => {
+              setNumber(e.target.value);
+              setNumberUnverified(false);
+            }}
           />
         </label>
 
@@ -1648,11 +1803,13 @@ function CardEditorSheet({
               Expiry (MM / YY)
               <div style={{ display: "flex", gap: 6 }}>
                 <input
+                  inputMode="numeric"
                   maxLength={2}
                   value={expMonth}
                   onChange={(e) => setExpMonth(e.target.value)}
                 />
                 <input
+                  inputMode="numeric"
                   maxLength={2}
                   value={expYear}
                   onChange={(e) => setExpYear(e.target.value)}
@@ -1662,12 +1819,26 @@ function CardEditorSheet({
             <label>
               CVV
               <input
+                inputMode="numeric"
+                autoComplete="off"
                 maxLength={4}
                 value={cvv}
                 onChange={(e) => setCvv(e.target.value)}
               />
             </label>
           </div>
+        )}
+
+        {type === "id_document" && (
+          <label>
+            Expiry <span className="optional">optional</span>
+            <input
+              placeholder="MM / YY"
+              maxLength={12}
+              value={expiryDate}
+              onChange={(e) => setExpiryDate(e.target.value)}
+            />
+          </label>
         )}
 
         {type === "bank_account" && (
@@ -1954,6 +2125,201 @@ function ScanQrSheet({
 
       <button className="secondary-button full" onClick={onClose} style={{ marginTop: 8 }}>
         Cancel
+      </button>
+    </Sheet>
+  );
+}
+
+// ============================================================================
+// CARD SCANNER
+// ============================================================================
+function scanStatusLabel(status: string): string {
+  if (status.includes("core")) return "Preparing scanner…";
+  if (status.includes("language")) return "Loading text model…";
+  if (status.includes("initializ")) return "Starting scanner…";
+  if (status.includes("recognizing")) return "Reading card…";
+  return "Reading card…";
+}
+
+function CardScanSheet({
+  onResult,
+  onClose,
+}: {
+  onResult: (scan: ScannedCard) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let active = true;
+
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Camera unavailable. Use a photo of the card instead.");
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        if (!active) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+          setCameraReady(true);
+        }
+      } catch (e: unknown) {
+        if (active) {
+          setError(
+            e instanceof Error && e.message
+              ? e.message
+              : "Camera unavailable. Use a photo of the card instead."
+          );
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+      abortRef.current?.abort();
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const analyze = async (canvas: HTMLCanvasElement) => {
+    setBusy(true);
+    setError("");
+    setStatus("Preparing scanner…");
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const text = await recognizeCard(
+        canvas,
+        (event) => setStatus(scanStatusLabel(event.status)),
+        controller.signal
+      );
+      const scan = parseCardText(text);
+      if (!scan) {
+        if (!controller.signal.aborted) {
+          setError("Couldn't read that card. Try again with more light and less glare.");
+        }
+        return;
+      }
+      onResult(scan);
+    } catch {
+      if (!controller.signal.aborted) {
+        setError("Could not read that card. Try again or use another photo.");
+      }
+    } finally {
+      abortRef.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  };
+
+  const capture = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    const canvas = renderCardCanvas(
+      video,
+      video.videoWidth,
+      video.videoHeight,
+      centerCardCrop(video.videoWidth, video.videoHeight)
+    );
+    void analyze(canvas);
+  };
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("Could not open that photo."));
+        image.src = url;
+      });
+      const canvas = renderCardCanvas(image, image.naturalWidth, image.naturalHeight);
+      await analyze(canvas);
+    } catch {
+      setError("Could not open that photo. Try a different image.");
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  return (
+    <Sheet title="Scan a card" onClose={onClose}>
+      <div className="card-scan-container">
+        <video ref={videoRef} playsInline muted />
+        <div className="card-scan-guide" aria-hidden="true" />
+        {!cameraReady && (
+          <div className="card-scan-placeholder">
+            <Icon name="camera" size={25} />
+            <span>{error ? "Use a photo of the card below" : "Starting camera…"}</span>
+          </div>
+        )}
+        {busy && (
+          <div className="card-scan-busy" role="status" aria-live="polite">
+            <span className="loading-dot" />
+            <strong>{status || "Reading card…"}</strong>
+            <small>Everything stays on this device.</small>
+          </div>
+        )}
+      </div>
+
+      <p className="scan-privacy">
+        <Icon name="shield" size={13} />
+        Scans run on this device. Photos are never uploaded or saved.
+      </p>
+
+      {error && (
+        <p className="scan-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <input
+        type="file"
+        ref={fileRef}
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={handleFile}
+      />
+
+      <button
+        className="primary-button full"
+        onClick={capture}
+        disabled={!cameraReady || busy}
+      >
+        <Icon name="camera" size={18} />
+        {busy ? "Reading card…" : "Capture card"}
+      </button>
+
+      <button
+        className="secondary-button full"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        style={{ marginTop: 8 }}
+      >
+        <Icon name="upload" size={17} /> Use a photo instead
       </button>
     </Sheet>
   );

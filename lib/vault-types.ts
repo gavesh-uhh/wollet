@@ -67,9 +67,17 @@ export interface UpiHandleItem extends BaseWalletItem {
 
 export interface IdDocumentItem extends BaseWalletItem {
   type: "id_document";
-  documentType: "National ID" | "Passport" | "Driver's License" | "Tax ID / SSN" | "Membership" | "Other";
+  documentType:
+    | "National ID"
+    | "Passport"
+    | "Driver's License"
+    | "Tax ID / SSN"
+    | "Campus card"
+    | "Membership"
+    | "Other";
   documentNumber: string;
   fullName: string;
+  issuer?: string; // Organization printed on a non-bank card
   issuingCountry?: string;
   expiryDate?: string;
 }

@@ -24,6 +24,7 @@ import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
 import { UploadSimple } from "@phosphor-icons/react/UploadSimple";
 import { Palette } from "@phosphor-icons/react/Palette";
 import { Lightning } from "@phosphor-icons/react/Lightning";
+import { Camera } from "@phosphor-icons/react/Camera";
 import { IdentificationCard } from "@phosphor-icons/react/IdentificationCard";
 import { Info } from "@phosphor-icons/react/Info";
 import { Shuffle } from "@phosphor-icons/react/Shuffle";
@@ -63,6 +64,7 @@ export default function Icon({
   const iconMap: Record<string, React.ComponentType<PhosphorIconProps>> = {
     wallet: Wallet,
     card: CreditCard,
+    camera: Camera,
     bank: Bank,
     qr: QrCode,
     scan: Scan,
