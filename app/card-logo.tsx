@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CARD_LOGOS, getCardLogo, prepareRegistryLogo, readCardLogo, searchCardLogos, type LogoRegistryEntry } from "../lib/card-logos";
 import Icon from "./icons";
 
@@ -13,10 +13,11 @@ export function CardLogo({ value }: { value?: string }) {
   </span>;
 }
 
-export function LogoPicker({ value, onChange, onBusyChange }: {
+export const LogoPicker = memo(function LogoPicker({ value, onChange, onBusyChange, active = true }: {
   value: string;
   onChange: (value: string) => void;
   onBusyChange?: (busy: boolean) => void;
+  active?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const requestId = useRef({ id: 0 });
@@ -26,15 +27,19 @@ export function LogoPicker({ value, onChange, onBusyChange }: {
   const [registryState, setRegistryState] = useState<"loading" | "ready" | "error">("loading");
   const [retry, setRetry] = useState(0);
   const [query, setQuery] = useState("");
-  const [limit, setLimit] = useState(24);
+  const [limit, setLimit] = useState(8);
   const selected = getCardLogo(value);
-  const results = useMemo(() => searchCardLogos([...CARD_LOGOS, ...registry], query), [registry, query]);
+  const results = useMemo(() => {
+    const popular = new Set(["HSBC", "Visa", "Mastercard", "American Express", "PayPal", "Apple", "Spotify", "Google"]);
+    return searchCardLogos([...CARD_LOGOS, ...registry.filter(entry => popular.has(entry.name)), ...registry.filter(entry => !popular.has(entry.name))], query);
+  }, [registry, query]);
   const visible = results.slice(0, limit);
   useEffect(() => {
     const requests = requestId.current;
     return () => { requests.id++; };
   }, []);
   useEffect(() => {
+    if (!active || registry.length > 0) return;
     const controller = new AbortController();
     fetch("/logos/registry/index.json", { signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error("Registry unavailable");
@@ -45,7 +50,7 @@ export function LogoPicker({ value, onChange, onBusyChange }: {
       if (!controller.signal.aborted) { setRegistry(entries); setRegistryState("ready"); }
     }).catch(() => { if (!controller.signal.aborted) setRegistryState("error"); });
     return () => { controller.abort(); };
-  }, [retry]);
+  }, [retry, active, registry.length]);
   const pick = (next: string) => {
     requestId.current.id++;
     setReading(false);
@@ -68,15 +73,15 @@ export function LogoPicker({ value, onChange, onBusyChange }: {
     }
   };
   return <div className="logo-picker">
-    <label className="registry-search">Search the logo registry
-      <input type="search" placeholder="Bank, app, brand…" value={query} onChange={event => {
-        setQuery(event.target.value); setLimit(24);
+    <label className="registry-search">Search logos
+      <input type="search" placeholder="Bank or brand name" value={query} onChange={event => {
+        setQuery(event.target.value); setLimit(8);
       }} />
     </label>
-    {selected && <div className="registry-selection"><CardLogo value={value} /><span>{selected.name}</span>
+    {selected && <div className="registry-selection"><span>Selected: {selected.name}</span>
       <button type="button" aria-label="Remove card logo" onClick={() => pick("")}><Icon name="close" size={15} /></button>
     </div>}
-    <p className="registry-count" role="status">{query ? `${results.length.toLocaleString()} ${results.length === 1 ? "match" : "matches"}` : `${results.length.toLocaleString()} logos to choose from`}{reading ? " · Preparing logo…" : ""}</p>
+    <p className="registry-count" role="status">{reading ? "Preparing logo…" : registryState === "loading" ? "Loading logos…" : query ? `${results.length.toLocaleString()} ${results.length === 1 ? "match" : "matches"}` : `${results.length.toLocaleString()} logos`}</p>
     <div className="registry-results" aria-label="Logo registry results">
     <div className="logo-grid" aria-label="Card logo">
       {!query &&
@@ -91,13 +96,11 @@ export function LogoPicker({ value, onChange, onBusyChange }: {
         <span>{logo.name}</span>
       </button>)}
     </div>
-    {results.length > limit && <button type="button" className="registry-more" onClick={() => setLimit(count => count + 24)}>Show more logos</button>}
+    {results.length > limit && <button type="button" className="registry-more" onClick={() => setLimit(count => count + 12)}>Show more</button>}
     </div>
-    {registryState === "loading" && <p className="registry-count" role="status">Loading the registry…</p>}
     {registryState === "error" && <div className="registry-empty"><p>The registry couldn’t load. Your saved logo and uploads still work.</p>
       <button type="button" onClick={() => { setRegistryState("loading"); setRetry(count => count + 1); }}>Try again</button></div>}
     {registryState === "ready" && results.length === 0 && <div className="registry-empty"><p>No logo found for “{query}”. Try a different name, or use your own image below.</p></div>}
-    <span className="registry-credit">Brand registry · Simple Icons</span>
     <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/avif" hidden onChange={async event => {
       const file = event.target.files?.[0];
       event.target.value = "";
@@ -116,9 +119,8 @@ export function LogoPicker({ value, onChange, onBusyChange }: {
       }
     }} />
     <button type="button" className="logo-upload" disabled={reading} onClick={() => fileRef.current?.click()}>
-      <Icon name="upload" size={17} /><span>{reading ? "Preparing logo…" : "Use your own logo"}</span>
-      <small>From your photos</small>
+      <Icon name="upload" size={17} /><span>{reading ? "Preparing logo…" : "Upload logo"}</span>
     </button>
     {error && <p className="scan-error" role="alert">{error}</p>}
   </div>;
-}
+});

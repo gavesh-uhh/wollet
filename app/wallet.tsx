@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import Icon from "./icons";
 import { CardLogo, LogoPicker } from "./card-logo";
 import { CARD_LOGOS, getCardLogo } from "../lib/card-logos";
@@ -93,12 +93,15 @@ export function Sheet({
   children,
   onClose,
   busy = false,
+  className = "",
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   busy?: boolean;
+  className?: string;
 }) {
+  const titleId = useId();
   const ref = useRef<HTMLDialogElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closingRef = useRef(false);
@@ -112,7 +115,7 @@ export function Sheet({
     setClosing(true);
     timer.current = setTimeout(
       onClose,
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 100
     );
   }, [onClose, busy]);
 
@@ -132,7 +135,8 @@ export function Sheet({
   return (
     <dialog
       ref={ref}
-      className={`sheet ${closing ? "closing" : ""}`}
+      className={`sheet ${className} ${closing ? "closing" : ""}`}
+      aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
         requestClose();
@@ -161,7 +165,7 @@ export function Sheet({
           }}
         >
           <span className="sheet-handle" aria-hidden="true" />
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button
             className="icon-button"
             aria-label="Close"
@@ -178,7 +182,7 @@ export function Sheet({
   );
 }
 
-export function WalletCard({
+export const WalletCard = memo(function WalletCard({
   card,
   compact = false,
 }: {
@@ -224,7 +228,7 @@ export function WalletCard({
       </div>
     </div>
   );
-}
+});
 
 function itemToDisplayCard(item: WalletItem): WalletDisplayCard {
   if (item.type === "credit_card") {
@@ -349,9 +353,11 @@ export default function Wallet() {
   const suppressCardClick = useRef(false);
   const cardGesture = useRef<{ x: number; y: number; axis: "x" | "y" | null } | null>(null);
   const swipeXRef = useRef(0);
+  const swipeFrame = useRef<number | null>(null);
   const [swipeX, setSwipeX] = useState(0);
 
   const notify = useCallback((msg: string) => setToast(msg), []);
+  useEffect(() => () => { if (swipeFrame.current !== null) cancelAnimationFrame(swipeFrame.current); }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -419,6 +425,11 @@ export default function Wallet() {
           urls: performance.getEntriesByType("resource").map(entry => entry.name),
         });
       }).catch(() => {});
+    } else if ("serviceWorker" in navigator) {
+      // Retire workers left by a production preview on this development URL.
+      navigator.serviceWorker.getRegistration("/").then(registration =>
+        registration?.unregister()
+      ).catch(() => {});
     }
 
     const onInstall = (e: Event) => {
@@ -570,12 +581,21 @@ export default function Wallet() {
     setModal("add");
   };
 
-  const cards: WalletDisplayCard[] = (vaultData?.items || []).map(itemToDisplayCard);
+  const cards: WalletDisplayCard[] = useMemo(() => (vaultData?.items || []).map(itemToDisplayCard), [vaultData?.items]);
   const current = cards.find((c) => c.id === selected) || cards[0];
 
   const updateSwipe = (next: number) => {
     swipeXRef.current = next;
-    setSwipeX(next);
+    if (next === 0) {
+      if (swipeFrame.current !== null) cancelAnimationFrame(swipeFrame.current);
+      swipeFrame.current = null;
+      setSwipeX(0);
+    } else if (swipeFrame.current === null) {
+      swipeFrame.current = requestAnimationFrame(() => {
+        swipeFrame.current = null;
+        setSwipeX(swipeXRef.current);
+      });
+    }
   };
 
   const shareCardDetails = (card: WalletDisplayCard) => {
@@ -708,7 +728,7 @@ export default function Wallet() {
               <div className="lock-avatar">
                 <Icon name="lock" size={26} />
               </div>
-              <h1>Wollet Locked</h1>
+              <h1>Wallet locked</h1>
               <p>Enter your PIN to open your wallet.</p>
               <form
                 onSubmit={(e) => {
@@ -736,7 +756,7 @@ export default function Wallet() {
                   style={{ width: "100%", maxWidth: 220 }}
                   disabled={!pinInput}
                 >
-                  Unlock Vault
+                  Unlock
                 </button>
               </form>
               <button className="text-button" onClick={() => {
@@ -885,15 +905,13 @@ export default function Wallet() {
                       className="card-stack"
                       aria-label="Swipe a card sideways to share its details"
                       style={{
-                        height: `calc(var(--card-height, 220px) + ${
-                          52 * Math.min(Math.max(cards.length - 1, 0), 2)
-                        }px)`,
+                        paddingBottom: 52 * Math.min(Math.max(cards.length - 1, 0), 2),
                       }}
                     >
                       {[
                         ...cards.filter((c) => c.id !== current?.id).slice(0, 2).reverse(),
                         ...(current ? [current] : []),
-                      ].map((c, index, all) => {
+                      ].map((c, index) => {
                         const isSelected = c.id === current?.id;
                         const isQrCard = c.type === "qr_code";
                         const shareReady =
@@ -907,7 +925,6 @@ export default function Wallet() {
                             style={{
                               top: index * 52,
                               zIndex: index + 1,
-                              transform: `scale(${1 - (all.length - 1 - index) * 0.025})`,
                             }}
                             aria-label={`${c.name}, ${c.bank}${
                               isSelected ? ", selected" : ", select card"
@@ -971,31 +988,13 @@ export default function Wallet() {
                     </button>
                   )}
 
-                  {cards.length > 1 && (
-                    <div className="card-picker" aria-label="Choose a card">
-                      {cards.map((c) => (
-                        <button
-                          key={c.id}
-                          className={c.id === current?.id ? "active" : ""}
-                          aria-label={`Select ${c.name}`}
-                          aria-pressed={c.id === current?.id}
-                          onClick={() => setSelected(c.id)}
-                        >
-                          <span className={`theme-dot theme-${c.theme}`} />
-                          <span>{c.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
                   {current && (
                     <div className="card-tools">
                       <button
                         className="text-button"
                         onClick={() => setModal("customize")}
                       >
-                        <Icon name="palette" size={13} />
-                        Customize style
+                        Customize
                       </button>
                     </div>
                   )}
@@ -1028,7 +1027,7 @@ export default function Wallet() {
                           onClick={() => copyPrimaryValue(current.raw)}
                         >
                           <Icon name="copy" size={19} />
-                          Copy Info
+                          Copy details
                         </button>
                       </>
                     ) : current ? (
@@ -1038,7 +1037,7 @@ export default function Wallet() {
                           onClick={() => copyPrimaryValue(current.raw)}
                         >
                           <Icon name="copy" size={19} />
-                          Copy Number
+                          Copy number
                         </button>
                         <button
                           className="secondary-button"
@@ -1055,7 +1054,7 @@ export default function Wallet() {
                       <>
                         <button className="primary-button" onClick={openAddSheet}>
                           <Icon name="plus" size={19} />
-                          Add Card
+                          Add card
                         </button>
                         <button className="secondary-button" onClick={() => setModal("scan")}>
                           <Icon name="scan" size={19} />
@@ -1069,13 +1068,14 @@ export default function Wallet() {
                 {/* Clean Library Section */}
                 <section className="recent-section">
                   <div className="section-label">
-                    <h2>Library</h2>
+                    <h2>Your items</h2>
                     <div className="segmented">
                       {(["all", "cards", "bank", "upi"] as const).map((tab) => (
                         <button
                           key={tab}
                           type="button"
                           className={filter === tab ? "chosen" : ""}
+                          aria-pressed={filter === tab}
                           onClick={() => setFilter(tab)}
                         >
                           {tab === "all"
@@ -1126,7 +1126,6 @@ export default function Wallet() {
                               {c.bank} · {c.last4 ? `•••• ${c.last4}` : c.network}
                             </small>
                           </span>
-                          <span className="row-badge">{c.network}</span>
                           <Icon name="chevron" size={14} />
                         </button>
                       ))
@@ -1145,11 +1144,11 @@ export default function Wallet() {
                       <Icon name="lock" />
                     </span>
                     <div>
-                      <strong>Passcode Protection</strong>
+                      <strong>Passcode</strong>
                       <p>
                         {schema?.hasPasscode
-                          ? "Your vault is protected by a master PIN."
-                          : "Device mode active. Set a master PIN for extra protection."}
+                          ? "A PIN is required to open your wallet."
+                          : "Add a PIN to protect your wallet."}
                       </p>
                     </div>
                     <button
@@ -1188,15 +1187,15 @@ export default function Wallet() {
                 </div>
 
                 <div className="settings-group">
-                  <h2>Encrypted Storage</h2>
+                  <h2>Storage and backup</h2>
                   <div className="setting-row">
                     <span className="setting-icon">
                       <Icon name="shield" />
                     </span>
                     <div>
-                      <strong>AES-256-GCM Storage</strong>
+                      <strong>On-device encryption</strong>
                       <p>
-                        {cards.length} items stored encrypted in your local browser vault.
+                        {cards.length} items, stored only on this device.
                       </p>
                     </div>
                   </div>
@@ -1218,7 +1217,7 @@ export default function Wallet() {
                       <Icon name="download" />
                     </span>
                     <div>
-                      <strong>Export Encrypted Backup</strong>
+                      <strong>Export encrypted backup</strong>
                       <p>Save a secure snapshot of your cards to a file.</p>
                     </div>
                     <Icon name="chevron" size={18} />
@@ -1237,8 +1236,8 @@ export default function Wallet() {
                       <Icon name="info" />
                     </span>
                     <div>
-                      <strong>About Wollet & Features</strong>
-                      <p>View the security overview and guide.</p>
+                      <strong>About Wollet</strong>
+                      <p>Privacy and getting started.</p>
                     </div>
                     <Icon name="chevron" size={18} />
                   </button>
@@ -1277,13 +1276,13 @@ export default function Wallet() {
                       <Icon name="trash" />
                     </span>
                     <div>
-                      <strong style={{ color: "#ef4444" }}>Reset Vault</strong>
+                      <strong style={{ color: "#ff453a" }}>Reset wallet</strong>
                       <p>Delete all cards and keys stored in this browser.</p>
                     </div>
                   </button>
                 </div>
 
-                <p className="settings-foot">Wollet Encrypted Vault 2.0</p>
+                <p className="settings-foot">Your wallet stays on this device.</p>
               </section>
             )}
           </div>
@@ -1683,7 +1682,7 @@ function StyleControls({
   onTheme: (theme: string) => void;
   onPattern: (pattern: CardPattern) => void;
 }) {
-  const [tab, setTab] = useState<"logo" | "color" | "texture">("logo");
+  const [tab, setTab] = useState<"logo" | "color" | "texture">("color");
   const shuffle = () => {
     onTheme(pickDifferent(theme, THEMES.map((t) => t.id)));
     onPattern(pickDifferent(pattern, PATTERNS) as CardPattern);
@@ -1692,11 +1691,11 @@ function StyleControls({
   return (
     <div className="design-controls">
       <div className="design-tabs" role="tablist" aria-label="Card appearance">
-        {(["logo", "color", "texture"] as const).map(panel => <button type="button" key={panel}
+        {(["color", "texture", "logo"] as const).map(panel => <button type="button" key={panel}
           role="tab" id={`design-tab-${panel}`} aria-controls={`design-panel-${panel}`} aria-selected={tab === panel}
           tabIndex={tab === panel ? 0 : -1} onClick={() => setTab(panel)}
           onKeyDown={event => {
-            const tabs = ["logo", "color", "texture"] as const;
+            const tabs = ["color", "texture", "logo"] as const;
             const index = tabs.indexOf(panel);
             let next = index;
             if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
@@ -1707,13 +1706,11 @@ function StyleControls({
             event.preventDefault(); setTab(tabs[next]);
             document.getElementById(`design-tab-${tabs[next]}`)?.focus();
           }}>
-          <Icon name={panel === "logo" ? "bank" : panel === "color" ? "palette" : "card"} size={16} />
           {panel === "logo" ? "Logo" : panel === "color" ? "Color" : "Texture"}
         </button>)}
       </div>
       <div id="design-panel-logo" role="tabpanel" aria-labelledby="design-tab-logo" hidden={tab !== "logo"}>
-        <div className="design-panel-heading"><span>Give it a familiar face</span><small>Find a bank, brand, or something entirely yours.</small></div>
-        <LogoPicker value={logo} onChange={onLogo} onBusyChange={onLogoBusy} />
+        <LogoPicker value={logo} onChange={onLogo} onBusyChange={onLogoBusy} active={tab === "logo"} />
       </div>
       <div id="design-panel-color" role="tabpanel" aria-labelledby="design-tab-color" hidden={tab !== "color"}>
         <div className="style-head">
@@ -1745,7 +1742,6 @@ function StyleControls({
       </div>
 
       <div id="design-panel-texture" role="tabpanel" aria-labelledby="design-tab-texture" hidden={tab !== "texture"}>
-        <div className="design-panel-heading"><span>A little character</span><small>Six finishes. Your choice.</small></div>
         <div className="texture-grid">
           {PATTERNS.map((p) => (
             <button
@@ -1783,10 +1779,10 @@ function CardStyleSheet({
   const preview: WalletDisplayCard = { ...card, theme, pattern, raw: { ...card.raw, logo } };
 
   return (
-    <Sheet title="Make it yours" onClose={onClose} busy={busy || logoBusy}>
+    <Sheet title="Customize card" onClose={onClose} busy={busy || logoBusy} className="appearance-sheet">
       <div className="card-studio">
       <fieldset className="studio-fieldset" disabled={busy}>
-      <div className="studio-preview"><WalletCard card={preview} compact /><span className="preview-caption">Your card, your way.</span></div>
+      <div className="studio-preview"><WalletCard card={preview} compact /></div>
       <StyleControls
         logo={logo} onLogo={setLogo} onLogoBusy={setLogoBusy}
         theme={theme}
@@ -1799,8 +1795,7 @@ function CardStyleSheet({
         disabled={busy || logoBusy}
         onClick={() => onSave(theme, pattern, logo)}
       >
-        <Icon name="check" size={18} />
-        {busy ? "Saving…" : "Save look"}
+        {busy ? "Saving…" : "Save changes"}
       </button>
       </fieldset>
       </div>
@@ -1878,7 +1873,7 @@ function CardEditorSheet({
         : "")
   );
   const [numberUnverified, setNumberUnverified] = useState(scan?.numberValid === false);
-  const [stage, setStage] = useState<"design" | "details">(card || scan ? "details" : "design");
+  const [stage, setStage] = useState<"design" | "details">("details");
   const [logo, setLogo] = useState(existingRaw?.logo || "");
   const [logoBusy, setLogoBusy] = useState(false);
   const subtypes = type === "bank_account"
@@ -1886,12 +1881,12 @@ function CardEditorSheet({
     : type === "credit_card" ? ["Debit", "Credit", "Prepaid"]
     : type === "id_document" ? ["Campus card", "Membership", "National ID", "Passport", "Driver's License", "Tax ID / SSN", "Other"]
     : [];
-  const selectLogo = (value: string) => {
+  const selectLogo = useCallback((value: string) => {
     setLogo(value);
     const selectedLogo = CARD_LOGOS.find(logo => logo.id === value);
     const previousLogo = CARD_LOGOS.find(choice => choice.id === logo);
     if (selectedLogo && (!bank.trim() || bank === previousLogo?.issuer)) setBank(selectedLogo.issuer);
-  };
+  }, [logo, bank]);
 
   const previewCard: WalletDisplayCard = {
     id: card?.id || "preview",
@@ -1965,25 +1960,21 @@ function CardEditorSheet({
   };
 
   return (
-    <Sheet title={card ? "Edit your card" : "A new addition"} onClose={onClose} busy={busy || logoBusy}>
+    <Sheet title={card ? "Edit card" : "Add card"} onClose={onClose} busy={busy || logoBusy}>
       <form className={`card-studio ${stage === "details" ? "is-details" : ""}`} onSubmit={handleSubmit}>
         <fieldset className="studio-fieldset" disabled={busy}>
-        <div className="studio-preview"><WalletCard card={previewCard} compact />
-          <span className="preview-caption">{stage === "design" ? "A little more you." : "Looking good. Add the essentials."}</span>
-        </div>
         <div className="studio-steps" aria-label="Card setup">
-          <button type="button" aria-pressed={stage === "design"} disabled={busy || logoBusy} onClick={() => setStage("design")}>
-            <Icon name="palette" size={17} />The look
-          </button>
           <button type="button" aria-pressed={stage === "details"} disabled={busy || logoBusy} onClick={() => setStage("details")}>
-            <Icon name="card" size={17} />The details
+            Details
+          </button>
+          <button type="button" aria-pressed={stage === "design"} disabled={busy || logoBusy} onClick={() => setStage("design")}>
+            Appearance
           </button>
         </div>
-        {stage === "design" && <div className="studio-design">
 
-        {!card && (
+        {!card && stage === "details" && (
           <div className="editor-section">
-            <div className="style-head"><span className="field-label">What are we adding?</span>
+            <div className="style-head"><span className="field-label">Type</span>
               {onScan && <button type="button" className="text-button studio-scan-shortcut" onClick={onScan}>
                 <Icon name="scan" size={15} />Scan a card
               </button>}
@@ -2013,13 +2004,15 @@ function CardEditorSheet({
                     );
                   }}
                 >
-                  <Icon name={t.icon} size={23} /><span>{t.label}</span>
+                  <span>{t.label}</span>
                 </button>
               ))}
             </div>
           </div>
         )}
 
+        {stage === "design" && <div className="studio-design">
+          <div className="studio-preview"><WalletCard card={previewCard} compact /></div>
           <StyleControls
             logo={logo} onLogo={selectLogo} onLogoBusy={setLogoBusy}
             theme={theme}
@@ -2033,10 +2026,13 @@ function CardEditorSheet({
         {scan && <p className={`notice ${numberUnverified ? "scan-warning" : ""}`}>
           <Icon name="scan" size={17} />{numberUnverified ? "Check the number. A digit may have been misread." : "Scanned for you. Check the details before saving."}
         </p>}
-        {subtypes.length > 0 && <div className="subtype-choices" aria-label="Card or account type">
+        {type === "credit_card" && <div className="subtype-choices" aria-label="Card type">
           {subtypes.map(subtype => <button key={subtype} type="button" aria-pressed={network === subtype}
             className={network === subtype ? "chosen" : ""} onClick={() => setNetwork(subtype)}>{subtype}</button>)}
         </div>}
+        {type === "id_document" && <label>Document type
+          <select value={network} onChange={event => setNetwork(event.target.value)}>{subtypes.map(subtype => <option key={subtype}>{subtype}</option>)}</select>
+        </label>}
         <label>
           {type === "credit_card"
             ? "Cardholder name"
@@ -2141,7 +2137,10 @@ function CardEditorSheet({
         )}
 
         {type === "bank_account" && (
-          <details className="optional-details"><summary>Branch & routing <span>Optional</span><Icon name="plus" size={14} /></summary>
+          <details className="optional-details"><summary>More details <span>Optional</span><Icon name="plus" size={14} /></summary>
+          <label>Account type<select value={network} onChange={event => setNetwork(event.target.value)}>
+            {subtypes.map(subtype => <option key={subtype}>{subtype}</option>)}
+          </select></label>
           <div className="form-grid">
             <label>
               Branch <span className="optional">optional</span>
@@ -2166,11 +2165,10 @@ function CardEditorSheet({
         </div>}
 
         <div className="studio-footer">
-          <span><Icon name="lock" size={12} />Only on this device</span>
           {stage === "design" ? <button type="button" disabled={busy || logoBusy} className="primary-button" onClick={() => setStage("details")}>
-            Add details <Icon name="chevron" size={17} />
+            Back to details
           </button> : <button type="submit" disabled={busy || logoBusy} className="primary-button">
-            {busy ? "Saving…" : card ? "Save changes" : "Save card"} <Icon name="check" size={18} />
+            {busy ? "Saving…" : card ? "Save changes" : "Save card"}
           </button>}
         </div>
         </fieldset>
@@ -2821,14 +2819,18 @@ function ImportItemSheet({
         </div>
       )}
 
-      <div className="editor-section" style={{ margin: "16px 0" }}>
-        <span className="field-label">Card Theme</span>
+      <details className="optional-details">
+        <summary>Appearance <Icon name="plus" size={14} /></summary>
+      <div className="editor-section">
+        <span className="field-label">Color</span>
         <div className="swatches">
           {THEMES.map((t) => (
             <button
               type="button"
               key={t.id}
               className={`swatch theme-${t.id} ${theme === t.id ? "chosen" : ""}`}
+              aria-label={t.label}
+              aria-pressed={theme === t.id}
               onClick={() => setTheme(t.id)}
             >
               {theme === t.id && <Icon name="check" size={18} />}
@@ -2836,6 +2838,7 @@ function ImportItemSheet({
           ))}
         </div>
       </div>
+      </details>
 
       <button
         className="primary-button full"
@@ -2853,7 +2856,7 @@ function ImportItemSheet({
           } as WalletItem);
         }}
       >
-        {busy ? "Saving…" : "Save to wallet"} <Icon name="check" size={18} />
+        {busy ? "Saving…" : "Save to wallet"}
       </button>
     </Sheet>
   );

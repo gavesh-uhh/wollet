@@ -489,7 +489,7 @@ test("Logo registry: selecting a brand caches its artwork for offline use", asyn
   }
 });
 
-function serviceWorkerHarness() {
+function serviceWorkerHarness({ development = false } = {}) {
   const handlers = new Map();
   const cached = new Map();
   let online = true;
@@ -497,8 +497,9 @@ function serviceWorkerHarness() {
   const fetcher = async request => {
     if (!online) throw new Error("Offline");
     return new Response(key(request) === "https://wallet.test/"
-      ? '<html><script src="/_next/static/app.js"></script><link href="/_next/static/app.css" rel="stylesheet"></html>'
-      : "static asset");
+      ? development ? '<html><script src="/_next/static/chunks/next-devtools.js"></script></html>'
+        : '<html><script src="/_next/static/app.js"></script><link href="/_next/static/app.css" rel="stylesheet"></html>'
+      : "static asset", { headers: development ? { "Cache-Control": "no-cache, must-revalidate" } : {} });
   };
   const cache = {
     match: async request => cached.get(key(request))?.clone(),
@@ -507,8 +508,8 @@ function serviceWorkerHarness() {
     addAll: async requests => { await Promise.all(requests.map(cache.add)); },
   };
   runInNewContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), {
-    self: { location: { origin: "https://wallet.test" }, addEventListener: (type, fn) => handlers.set(type, fn), skipWaiting: async () => {} },
-    caches: { open: async () => cache, match: cache.match },
+    self: { location: { origin: "https://wallet.test" }, addEventListener: (type, fn) => handlers.set(type, fn), skipWaiting: async () => {}, registration: { unregister: async () => true } },
+    caches: { open: async () => cache, match: cache.match, delete: async () => { cached.clear(); return true; } },
     fetch: fetcher, URL,
   });
   return { cached, handlers, offline: () => { online = false; }, async dispatch(type, fields = {}) {
@@ -542,4 +543,13 @@ test("Offline: share URLs and external resources are never cached", async () => 
   worker.offline();
   const response = await worker.dispatch("fetch", { request: { method: "GET", mode: "cors", url: "https://wallet.test/ocr/worker.min.js" } });
   assert.equal(await response.text(), "static asset");
+});
+
+test("Offline worker stops serving cached UI files on a development server", async () => {
+  const worker = serviceWorkerHarness({ development: true });
+  await worker.dispatch("install");
+  const response = await worker.dispatch("fetch", { request: { method: "GET", mode: "navigate", url: "https://wallet.test/" } });
+  assert.match(await response.text(), /next-devtools/);
+  assert.equal(worker.cached.size, 0);
+  assert.equal(await worker.dispatch("fetch", { request: { method: "GET", mode: "cors", url: "https://wallet.test/_next/static/chunks/next-devtools.js" } }), undefined);
 });
