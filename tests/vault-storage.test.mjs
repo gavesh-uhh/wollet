@@ -8,6 +8,7 @@ import {
   verifyPasscodeWithAuth,
 } from "../lib/crypto.ts";
 import {
+  createQrCardDraft,
   isSafeForQrSharing,
   createSafeSharePayload,
   parseScannedQr,
@@ -139,6 +140,16 @@ test("QR Parser: handles standard payment links", () => {
   assert.equal(parsed.itemDraft?.accountHolderName, "SuperStore");
 });
 
+test("QR Cards: arbitrary payloads are saved verbatim", () => {
+  const payload = "WIFI:T:WPA;S:Cafe Guest;P:p@ss&word;;";
+  const draft = createQrCardDraft(`  ${payload}  `);
+  assert.ok(draft);
+  assert.equal(draft.type, "qr_code");
+  assert.equal(draft.title, "Scanned QR");
+  assert.equal(draft.qrValue, payload);
+  assert.equal(createQrCardDraft("   "), null);
+});
+
 
 test("Vault Storage: new vaults start empty", async () => {
   const mockStorage = new Map();
@@ -152,6 +163,41 @@ test("Vault Storage: new vaults start empty", async () => {
   const { createNewVault } = await import("../lib/vault-storage.ts");
   const created = await createNewVault("1357", false);
   assert.equal(created.data.items.length, 0);
+});
+
+
+test("Vault Storage: QR card content is encrypted and restored", async () => {
+  const mockStorage = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => mockStorage.get(k) || null,
+    setItem: (k, v) => mockStorage.set(k, String(v)),
+    removeItem: (k) => mockStorage.delete(k),
+    clear: () => mockStorage.clear(),
+  };
+
+  const { createNewVault, getRawVaultSchema, unlockVault } = await import(
+    "../lib/vault-storage.ts"
+  );
+  const qrValue = "https://example.com/ticket?id=123&seat=A1";
+  const draft = createQrCardDraft(qrValue);
+  assert.ok(draft);
+  await createNewVault("1122", false, [
+    {
+      ...draft,
+      id: "qr-1",
+      colorTheme: "silver",
+      isFavorite: false,
+      tags: [],
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  ]);
+
+  assert.equal(JSON.stringify(getRawVaultSchema()).includes(qrValue), false);
+
+  const unlocked = await unlockVault("1122");
+  assert.ok("data" in unlocked);
+  assert.equal(unlocked.data.items[0].qrValue, qrValue);
 });
 
 

@@ -5,6 +5,7 @@ import Icon from "./icons";
 import { centerCardCrop, recognizeCard, renderCardCanvas } from "../lib/card-ocr";
 import { detectCardNetwork, parseCardText, type ScannedCard } from "../lib/card-scan";
 import {
+  createQrCardDraft,
   createSafeSharePayload,
   isSafeForQrSharing,
   parseScannedQr,
@@ -27,6 +28,7 @@ import type {
   CreditCardItem,
   EncryptedVaultStorageSchema,
   IdDocumentItem,
+  QrCodeItem,
   UpiHandleItem,
   VaultData,
   WalletItem,
@@ -195,10 +197,18 @@ export function WalletCard({
         <div>
           <span className="card-name">{card.name}</span>
           <span className="card-number">
-            •••• &nbsp;{card.last4 || "••••"}
+            {card.type === "qr_code" ? (
+              "Tap to view QR"
+            ) : (
+              <>•••• &nbsp;{card.last4 || "••••"}</>
+            )}
           </span>
         </div>
-        <Icon name="contactless" size={28} />
+        {card.type === "qr_code" ? (
+          <Icon name="qr" size={28} />
+        ) : (
+          <Icon name="contactless" size={28} />
+        )}
       </div>
     </div>
   );
@@ -230,6 +240,20 @@ function itemToDisplayCard(item: WalletItem): WalletDisplayCard {
       pattern: d.pattern || "plain",
       network: d.documentType || "Other",
       type: "id_document",
+      raw: item,
+    };
+  }
+  if (item.type === "qr_code") {
+    const q = item as QrCodeItem;
+    return {
+      id: q.id,
+      name: q.title || "QR code",
+      bank: "Saved QR",
+      last4: "",
+      theme: q.colorTheme || "silver",
+      pattern: q.pattern || "plain",
+      network: "QR",
+      type: "qr_code",
       raw: item,
     };
   }
@@ -286,7 +310,7 @@ export default function Wallet() {
   });
   const [page, setPage] = useState<"wallet" | "settings">("wallet");
   const [modal, setModal] = useState<
-    "add" | "card" | "customize" | "edit" | "share" | "scan" | "cardscan" | "import" | null
+    "add" | "card" | "customize" | "edit" | "share" | "scan" | "cardscan" | "import" | "qrview" | null
   >(null);
 
   const [schema, setSchema] = useState<EncryptedVaultStorageSchema | null>(() => getRawVaultSchema());
@@ -496,7 +520,11 @@ export default function Wallet() {
       suppressCardClick.current = false;
     }, 220);
     if (Math.abs(dx) >= SHARE_SWIPE_THRESHOLD && current) {
-      shareCardDetails(current);
+      if (current.type === "qr_code") {
+        setModal("qrview");
+      } else {
+        shareCardDetails(current);
+      }
     }
   };
 
@@ -514,6 +542,9 @@ export default function Wallet() {
     } else if (raw.type === "id_document") {
       text = (raw as IdDocumentItem).documentNumber;
       label = "Card Number";
+    } else if (raw.type === "qr_code") {
+      text = (raw as QrCodeItem).qrValue;
+      label = "QR content";
     } else if (raw.type === "bank_account") {
       text = (raw as BankAccountItem).accountNumber;
       label = "Account Number";
@@ -533,7 +564,7 @@ export default function Wallet() {
 
   const filteredCards = cards.filter((c) => {
     if (filter === "all") return true;
-    if (filter === "cards") return c.type === "credit_card" || c.type === "id_document";
+    if (filter === "cards") return c.type === "credit_card" || c.type === "id_document" || c.type === "qr_code";
     if (filter === "bank") return c.type === "bank_account";
     if (filter === "upi") return c.type === "upi_handle";
     return true;
@@ -738,6 +769,7 @@ export default function Wallet() {
                         ...(current ? [current] : []),
                       ].map((c, index, all) => {
                         const isSelected = c.id === current?.id;
+                        const isQrCard = c.type === "qr_code";
                         const shareReady =
                           isSelected && Math.abs(swipeX) >= SHARE_SWIPE_THRESHOLD;
                         return (
@@ -766,7 +798,7 @@ export default function Wallet() {
                               }
                               if (isSelected) {
                                 setIsRevealed(false);
-                                setModal("card");
+                                setModal(isQrCard ? "qrview" : "card");
                               } else {
                                 setSelected(c.id);
                               }
@@ -784,10 +816,10 @@ export default function Wallet() {
                                   }`}
                                 >
                                   <span className="share-orb">
-                                    <Icon name="share" size={19} />
+                                    <Icon name={isQrCard ? "qr" : "share"} size={19} />
                                   </span>
                                   <span className="share-word">
-                                    {shareReady ? "Release" : "Share"}
+                                    {shareReady ? "Release" : isQrCard ? "View" : "Share"}
                                   </span>
                                 </span>
                               </div>
@@ -844,7 +876,21 @@ export default function Wallet() {
 
                   {/* Clean Action Row */}
                   <div className="action-row">
-                    {current && isSafeForQrSharing(current.raw) ? (
+                    {current && current.type === "qr_code" ? (
+                      <>
+                        <button className="primary-button" onClick={() => setModal("qrview")}>
+                          <Icon name="qr" size={19} />
+                          View QR
+                        </button>
+                        <button
+                          className="secondary-button"
+                          onClick={() => copyPrimaryValue(current.raw)}
+                        >
+                          <Icon name="copy" size={19} />
+                          Copy QR
+                        </button>
+                      </>
+                    ) : current && isSafeForQrSharing(current.raw) ? (
                       <>
                         <button className="primary-button" onClick={() => setModal("share")}>
                           <Icon name="qr" size={19} />
@@ -928,7 +974,7 @@ export default function Wallet() {
                           onClick={() => {
                             setSelected(c.id);
                             setIsRevealed(false);
-                            setModal("card");
+                            setModal(c.type === "qr_code" ? "qrview" : "card");
                           }}
                         >
                           <span className={`transaction-icon theme-${c.theme}`}>
@@ -940,6 +986,8 @@ export default function Wallet() {
                                   ? "bank"
                                   : c.type === "upi_handle"
                                   ? "lightning"
+                                  : c.type === "qr_code"
+                                  ? "qr"
                                   : "fileText"
                               }
                               size={18}
@@ -1137,6 +1185,20 @@ export default function Wallet() {
         />
       )}
 
+      {modal === "qrview" && current?.type === "qr_code" && (
+        <QrCardSheet
+          card={current}
+          onCopy={() => copyPrimaryValue(current.raw)}
+          onDelete={() => {
+            const next = (vaultData?.items || []).filter((i) => i.id !== current.id);
+            saveItems(next);
+            setModal(null);
+            notify("QR card removed from wallet.");
+          }}
+          onClose={() => setModal(null)}
+        />
+      )}
+
       {modal === "customize" && current && (
         <CardStyleSheet
           card={current}
@@ -1202,12 +1264,16 @@ export default function Wallet() {
         <ScanQrSheet
           onResult={(res) => {
             const parsed = parseScannedQr(res);
-            if (parsed.valid && parsed.itemDraft) {
-              setScannedDraft(parsed.itemDraft);
-              setModal("import");
-            } else {
+            const draft =
+              parsed.valid && parsed.itemDraft
+                ? parsed.itemDraft
+                : createQrCardDraft(res);
+            if (!draft) {
               notify(parsed.error || "Unrecognized QR code.");
+              return;
             }
+            setScannedDraft(draft);
+            setModal("import");
           }}
           onError={(err) => notify(err)}
           onClose={() => setModal(null)}
@@ -1317,6 +1383,12 @@ function CardDetailsSheet({
                   : `•••• ${bank.accountNumber.slice(-4)}`}
               </strong>
             </div>
+            {bank.branchName && (
+              <div>
+                <span>Branch</span>
+                <strong>{bank.branchName}</strong>
+              </div>
+            )}
             {bank.routingOrIfsc && (
               <div>
                 <span>Routing / IFSC</span>
@@ -1533,6 +1605,8 @@ function CardEditorSheet({
   const existingCard = existingRaw?.type === "credit_card" ? (existingRaw as CreditCardItem) : null;
   const existingDocument =
     existingRaw?.type === "id_document" ? (existingRaw as IdDocumentItem) : null;
+  const existingBank =
+    existingRaw?.type === "bank_account" ? (existingRaw as BankAccountItem) : null;
   const scannedType = scan ? (scan.kind === "other" ? "id_document" : "credit_card") : null;
   const [type, setType] = useState<WalletItemType>(
     existingRaw?.type || scannedType || "bank_account"
@@ -1570,7 +1644,8 @@ function CardEditorSheet({
   const [expMonth, setExpMonth] = useState(existingCard?.expiryMonth || scan?.expiryMonth || "");
   const [expYear, setExpYear] = useState(existingCard?.expiryYear || scan?.expiryYear || "");
   const [cvv, setCvv] = useState(existingCard?.cvv || "");
-  const [routing, setRouting] = useState((existingRaw as BankAccountItem)?.routingOrIfsc || "");
+  const [routing, setRouting] = useState(existingBank?.routingOrIfsc || "");
+  const [branch, setBranch] = useState(existingBank?.branchName || "");
   const [expiryDate, setExpiryDate] = useState(
     existingDocument?.expiryDate ||
       (scan?.kind === "other" && scan.expiryMonth
@@ -1622,6 +1697,7 @@ function CardEditorSheet({
       base.accountType = network;
       base.currency = "USD";
       base.routingOrIfsc = routing.trim();
+      base.branchName = branch.trim();
     } else if (type === "credit_card") {
       base.bankOrIssuer = bank.trim();
       base.cardholderName = name.trim().toUpperCase();
@@ -1842,20 +1918,115 @@ function CardEditorSheet({
         )}
 
         {type === "bank_account" && (
-          <label>
-            Routing / IFSC <span className="optional">optional</span>
-            <input
-              placeholder="e.g. SAMPLE01"
-              value={routing}
-              onChange={(e) => setRouting(e.target.value)}
-            />
-          </label>
+          <div className="form-grid">
+            <label>
+              Branch <span className="optional">optional</span>
+              <input
+                placeholder="e.g. Colombo"
+                maxLength={40}
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+              />
+            </label>
+            <label>
+              Routing / IFSC <span className="optional">optional</span>
+              <input
+                placeholder="e.g. SAMPLE01"
+                value={routing}
+                onChange={(e) => setRouting(e.target.value)}
+              />
+            </label>
+          </div>
         )}
 
         <button type="submit" className="primary-button full" style={{ marginTop: 22 }}>
           Save to wallet <Icon name="check" size={18} />
         </button>
       </form>
+    </Sheet>
+  );
+}
+
+// ============================================================================
+// SAVED QR CARD
+// ============================================================================
+function QrCodeImage({
+  value,
+  size = 240,
+  alt = "QR code",
+}: {
+  value: string;
+  size?: number;
+  alt?: string;
+}) {
+  const [url, setUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    import("qrcode")
+      .then((m) =>
+        m.default.toDataURL(value, {
+          width: size * 2,
+          margin: 1,
+          color: { dark: "#0a0a0a", light: "#ffffff" },
+          errorCorrectionLevel: "M",
+        })
+      )
+      .then((dataUrl) => {
+        if (active) setUrl(dataUrl);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [value, size]);
+
+  if (failed) {
+    return <p className="qr-caption">This QR code is too large to display.</p>;
+  }
+  if (!url) return <div className="loading-dot" />;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- QR is a generated data URL.
+    <img src={url} alt={alt} width={size} height={size} />
+  );
+}
+
+function QrCardSheet({
+  card,
+  onCopy,
+  onDelete,
+  onClose,
+}: {
+  card: WalletDisplayCard;
+  onCopy: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const qr = card.raw as QrCodeItem;
+
+  return (
+    <Sheet title={card.name} onClose={onClose}>
+      <div className="qr-modal-box">
+        <div className="qr-frame qr-card-frame">
+          <QrCodeImage value={qr.qrValue} size={260} alt={`${card.name} QR code`} />
+        </div>
+        <p className="qr-caption">This QR code is stored on this device only.</p>
+        <button className="primary-button full" onClick={onCopy}>
+          <Icon name="copy" size={17} /> Copy QR content
+        </button>
+        <button
+          className="danger-button full"
+          onClick={() => {
+            if (confirm("Remove this QR card from your wallet?")) onDelete();
+          }}
+        >
+          <Icon name="trash" size={16} />
+          Remove card
+        </button>
+      </div>
     </Sheet>
   );
 }
@@ -1958,6 +2129,12 @@ function ShareQrSheet({
               <span>Holder</span>
               <strong>{bank.accountHolder}</strong>
             </div>
+            {bank.branchName && (
+              <div>
+                <span>Branch</span>
+                <strong>{bank.branchName}</strong>
+              </div>
+            )}
           </div>
         )}
 
@@ -2340,43 +2517,72 @@ function ImportItemSheet({
   const [theme, setTheme] = useState("ocean");
   const bank = draft.type === "bank_account" ? (draft as Partial<BankAccountItem>) : null;
   const upi = draft.type === "upi_handle" ? (draft as Partial<UpiHandleItem>) : null;
+  const qr = draft.type === "qr_code" ? (draft as Partial<QrCodeItem>) : null;
+  const [title, setTitle] = useState(qr?.title || "Scanned QR");
 
   return (
     <Sheet title="Save to wallet" onClose={onClose}>
-      <div className="detail-list">
-        <div>
-          <span>Type</span>
-          <strong>{draft.type === "bank_account" ? "Bank account" : "Payment handle"}</strong>
+      {qr ? (
+        <>
+          <div className="qr-frame qr-card-frame">
+            <QrCodeImage value={qr.qrValue || ""} size={230} alt="Scanned QR" />
+          </div>
+          <label>
+            Name
+            <input
+              required
+              maxLength={32}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <p className="scan-privacy">
+            <Icon name="shield" size={13} />
+            Saved encrypted on this device.
+          </p>
+        </>
+      ) : (
+        <div className="detail-list">
+          <div>
+            <span>Type</span>
+            <strong>{draft.type === "bank_account" ? "Bank account" : "Payment handle"}</strong>
+          </div>
+          {bank && (
+            <>
+              <div>
+                <span>Bank</span>
+                <strong>{bank.bankName}</strong>
+              </div>
+              <div>
+                <span>Account</span>
+                <strong>{bank.accountNumber}</strong>
+              </div>
+              <div>
+                <span>Holder</span>
+                <strong>{bank.accountHolder}</strong>
+              </div>
+              {bank.branchName && (
+                <div>
+                  <span>Branch</span>
+                  <strong>{bank.branchName}</strong>
+                </div>
+              )}
+            </>
+          )}
+          {upi && (
+            <>
+              <div>
+                <span>Payment ID</span>
+                <strong>{upi.handle}</strong>
+              </div>
+              <div>
+                <span>Holder</span>
+                <strong>{upi.accountHolderName}</strong>
+              </div>
+            </>
+          )}
         </div>
-        {bank && (
-          <>
-            <div>
-              <span>Bank</span>
-              <strong>{bank.bankName}</strong>
-            </div>
-            <div>
-              <span>Account</span>
-              <strong>{bank.accountNumber}</strong>
-            </div>
-            <div>
-              <span>Holder</span>
-              <strong>{bank.accountHolder}</strong>
-            </div>
-          </>
-        )}
-        {upi && (
-          <>
-            <div>
-              <span>Payment ID</span>
-              <strong>{upi.handle}</strong>
-            </div>
-            <div>
-              <span>Holder</span>
-              <strong>{upi.accountHolderName}</strong>
-            </div>
-          </>
-        )}
-      </div>
+      )}
 
       <div className="editor-section" style={{ margin: "16px 0" }}>
         <span className="field-label">Card Theme</span>
@@ -2399,6 +2605,7 @@ function ImportItemSheet({
         onClick={() => {
           onSave({
             ...draft,
+            ...(qr ? { title: title.trim() || "Scanned QR" } : {}),
             id: `item-${Date.now()}`,
             colorTheme: theme,
             isFavorite: false,

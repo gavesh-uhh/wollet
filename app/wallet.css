@@ -186,6 +186,17 @@
   display: inline-block;
   margin-bottom: 16px;
 }
+.qr-card-frame{
+  width: min(78vw, 300px);
+  height: min(78vw, 300px);
+  display: grid;
+  place-items: center;
+  margin-top: 4px;
+}
+.qr-card-frame img{
+  max-width: 100%;
+  height: auto;
+}
 .qr-caption{
   font-size: 11px;
   color: #888;

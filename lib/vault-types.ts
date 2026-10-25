@@ -7,6 +7,7 @@ export type WalletItemType =
   | "bank_account"
   | "upi_handle"
   | "id_document"
+  | "qr_code"
   | "secure_note"
   | "custom";
 
@@ -82,6 +83,11 @@ export interface IdDocumentItem extends BaseWalletItem {
   expiryDate?: string;
 }
 
+export interface QrCodeItem extends BaseWalletItem {
+  type: "qr_code";
+  qrValue: string; // Raw text encoded in the saved QR code
+}
+
 export interface SecureNoteItem extends BaseWalletItem {
   type: "secure_note";
   category: "General" | "WiFi" | "Credentials" | "Recovery Phrase" | "Code";
@@ -98,6 +104,7 @@ export type WalletItem =
   | BankAccountItem
   | UpiHandleItem
   | IdDocumentItem
+  | QrCodeItem
   | SecureNoteItem
   | CustomWalletItem;
 

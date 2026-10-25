@@ -28,6 +28,20 @@ export function isSafeForQrSharing(item: WalletItem): boolean {
 }
 
 /**
+ * Wraps any scanned QR payload as a wallet card draft.
+ * Returns null for an empty payload.
+ */
+export function createQrCardDraft(value: string): Partial<WalletItem> | null {
+  const qrValue = value.trim();
+  if (!qrValue) return null;
+  return {
+    type: "qr_code",
+    title: "Scanned QR",
+    qrValue,
+  };
+}
+
+/**
  * Constructs a safe, sanitized payload to encode in the QR code.
  * Returns null if the item is sensitive (e.g. Credit Card).
  */
