@@ -195,7 +195,17 @@
 }
 .qr-card-frame img{
   max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
   height: auto;
+}
+.code-image-frame{
+  width: 100%;
+  height: auto;
+}
+.code-image-frame img{
+  width: 100%;
+  max-height: none;
 }
 .qr-caption{
   font-size: 11px;
@@ -733,6 +743,154 @@
   background: #262626;
   border-color: #666666;
   color: #ededed;
+}
+
+/* The card studio: a live card above a quiet tray of visual choices. */
+.card-studio{
+  --studio-ink: #f2eee8;
+  --studio-muted: #929b95;
+  --studio-accent: #cbd6cd;
+  --studio-panel: #141816;
+  --studio-line: #343c36;
+  color: var(--studio-ink);
+}
+.studio-fieldset{border: 0;padding: 0;margin: 0;min-width: 0;}
+.card-brand{max-width: 72%;}
+.card-logo-mark{
+  display: inline-flex;
+  width: 124px;
+  height: 48px;
+  padding: 6px 10px;
+  align-items: center;
+  justify-content: flex-start;
+  background: #ffffff;
+  border-radius: 5px;
+}
+.card-logo-mark img{width: 100%;height: 100%;object-fit: contain;}
+.studio-preview{
+  position: sticky;
+  top: -29px;
+  z-index: 4;
+  padding: 18px 12px 10px;
+  margin: -6px -6px 18px;
+  border-radius: 18px;
+  background: radial-gradient(ellipse at 50% 35%, #323a333d, #040404 72%), #040404;
+}
+.card-studio .studio-preview .wallet-card.compact{height: 180px;}
+.card-studio .studio-scan-shortcut{min-height: 32px;color: var(--studio-accent);}
+.studio-preview .wallet-card{
+  transform: rotate(-1.3deg);
+  box-shadow: 0 16px 24px -16px #000, 0 0 0 1px #ffffff10;
+  transition: background .2s, height .2s, transform .2s;
+}
+.preview-caption{
+  display: block;
+  text-align: center;
+  margin-top: 19px;
+  color: var(--studio-muted);
+  font-size: 10px;
+  letter-spacing: .15px;
+}
+.studio-steps{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--studio-line);
+  margin-bottom: 20px;
+}
+.studio-steps button{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 47px;
+  color: #838c86;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.studio-steps button[aria-pressed="true"]{color: var(--studio-accent);border-bottom-color: var(--studio-accent);}
+.item-type-grid{display: grid;grid-template-columns: repeat(4, minmax(0, 1fr));gap: 8px;}
+.item-type-grid button{
+  display: flex;flex-direction: column;align-items: center;justify-content: center;gap: 10px;
+  border: 1px solid #252d27;border-radius: 12px;min-height: 80px;color: #939d96;font-size: 10px;
+}
+.item-type-grid button.chosen{background: #cbd6cd12;border-color: #a8b7ab;color: var(--studio-accent);}
+.card-studio .scan-invite{margin-top: 0;background: #161c18;border-color: #303b32;}
+.card-studio .scan-invite-icon{color: var(--studio-accent);}
+.design-controls{margin-top: 24px;}
+.design-tabs{display: grid;grid-template-columns: repeat(3, 1fr);gap: 5px;background: #151a16;padding: 5px;border-radius: 11px;margin-bottom: 20px;}
+.design-tabs button{display: flex;align-items: center;justify-content: center;gap: 7px;min-height: 40px;border-radius: 7px;font-size: 11px;color: #8e9890;}
+.design-tabs button[aria-selected="true"]{background: #303a32;color: #f2eee8;box-shadow: 0 2px 5px #0003;}
+.design-controls [hidden],.logo-picker input[hidden]{display: none !important;}
+.design-controls [role="tabpanel"]{min-height: 190px;}
+.design-panel-heading{display: flex;flex-direction: column;gap: 5px;margin-bottom: 16px;}
+.design-panel-heading>span{font-size: 12px;font-weight: 550;}
+.design-panel-heading small{font-size: 10px;color: var(--studio-muted);}
+.logo-grid{display: grid;grid-template-columns: repeat(4, minmax(0, 1fr));gap: 8px;}
+.logo-option{min-width: 0;display: flex;flex-direction: column;align-items: center;gap: 8px;padding: 5px 4px 9px;border: 1px solid #343b35;border-radius: 10px;color: #a2aaa4;font-size: 10px;position: relative;}
+.logo-option.chosen{border-color: var(--studio-accent);background: #cbd6cd10;color: var(--studio-ink);}
+.logo-option.chosen::after{content: "";position: absolute;right: 5px;top: 5px;width: 6px;height: 6px;border-radius: 50%;background: #51775c;box-shadow: 0 0 0 2px #fff;}
+.logo-option-art{width: 100%;height: 50px;background: #fff;display: grid;place-items: center;border-radius: 5px;overflow: hidden;}
+.logo-option-art .card-logo-mark{background: transparent;width: 100%;height: 100%;padding: 6px;}
+.logo-option-art.logo-empty{background: #202821;color: #a6b1a9;}
+.logo-upload{display: flex;align-items: center;gap: 8px;min-height: 46px;width: 100%;margin-top: 12px;padding: 8px 0;color: var(--studio-accent);font-size: 11px;text-align: left;}
+.logo-upload small{margin-left: auto;color: #7f8b82;font-size: 9px;}
+.sheet .registry-search{margin: 0 0 12px;color: #a4afa7;font-size: 10px;}
+.sheet .registry-search input{margin-top: 7px;background: #151c17;border-color: #364139;font-size: 13px;min-height: 44px;}
+.registry-results{max-height: 252px;overflow-y: auto;overscroll-behavior: contain;padding: 2px 4px 2px 1px;}
+.registry-results .logo-option>span:last-child{max-width: 100%;overflow: hidden;text-overflow: ellipsis;white-space: nowrap;}
+.registry-results .card-logo-mark{justify-content: center;}
+.registry-results .card-logo-mark img{max-height: 36px;}
+.registry-count{font-size: 10px;color: #9ca89f;line-height: 1.6;margin-bottom: 10px;}
+.registry-selection{display: flex;gap: 9px;align-items: center;border: 1px solid #35443a;background: #1b271f;border-radius: 9px;padding: 7px 9px;margin-bottom: 12px;}
+.registry-selection>.card-logo-mark{width: 50px;height: 30px;padding: 3px 5px;flex-shrink: 0;}
+.registry-selection>span:not(.card-logo-mark){min-width: 0;overflow: hidden;text-overflow: ellipsis;white-space: nowrap;font-size: 11px;}
+.registry-selection>button{margin-left: auto;width: 32px;height: 32px;display: grid;place-items: center;flex-shrink: 0;}
+.registry-more{width: 100%;min-height: 42px;margin-top: 9px;color: #cbd6cd;font-size: 11px;background: #1b251e;border-radius: 7px;}
+.registry-empty{font-size: 11px;color: #a7b2aa;line-height: 1.7;padding: 8px 0;}
+.registry-empty button{padding: 9px 0;color: #e5efe8;text-decoration: underline;}
+.registry-credit{display: block;font-size: 9px;color: #748278;margin-top: 12px;}
+.card-studio .swatches{display: grid;grid-template-columns: repeat(6, minmax(0, 1fr));gap: 18px 12px;overflow: visible;margin: 20px 0 8px;padding: 6px;}
+.card-studio .swatch{width: 100%;height: auto;aspect-ratio: 1;max-width: 40px;justify-self: center;}
+.card-studio .swatch.chosen::after{border-color: var(--studio-accent);border-width: 2px;}
+.card-studio .texture-grid{grid-template-columns: repeat(3, minmax(0, 1fr));gap: 8px;}
+.card-studio .texture-grid button{display: flex;flex-direction: column;gap: 8px;padding: 5px 5px 9px;border-radius: 9px;background: transparent;}
+.card-studio .texture-grid button.chosen{border-color: var(--studio-accent);background: #cbd6cd0b;}
+.texture-sample{display: block;width: 100%;height: 45px;border-radius: 5px;position: relative;overflow: hidden;}
+.texture-sample::after{content: "";position: absolute;inset: 0;opacity: .25;}
+.texture-sample[data-texture="orbit"]::after{background: repeating-radial-gradient(circle at 80% 60%,transparent 0 12px,currentColor 13px 14px,transparent 15px 24px);}
+.texture-sample[data-texture="wave"]::after{background: repeating-radial-gradient(ellipse at 100% 150%,transparent 0 12px,currentColor 13px 14px,transparent 15px 24px);}
+.texture-sample[data-texture="grid"]::after{background-image: linear-gradient(currentColor 1px, transparent 1px),linear-gradient(90deg,currentColor 1px,transparent 1px);background-size: 12px 12px;}
+.texture-sample[data-texture="stripes"]::after{background: repeating-linear-gradient(115deg,currentColor 0 1px,transparent 1px 9px);}
+.texture-sample[data-texture="dots"]::after{background: radial-gradient(currentColor 1px,transparent 1.5px);background-size: 9px 9px;}
+.card-studio.is-details .studio-preview .wallet-card.compact{height: 156px;transform: none;}
+.subtype-choices{display: flex;flex-wrap: wrap;gap: 7px;margin-bottom: 22px;}
+.subtype-choices button{min-height: 36px;border: 1px solid #343c36;border-radius: 30px;padding: 7px 12px;font-size: 10px;color: #99a39b;}
+.subtype-choices button.chosen{color: #132018;background: #cbd6cd;border-color: #cbd6cd;}
+.studio-fields{padding: 0 3px;}
+.sheet .studio-fields label{color: #919e95;font-size: 10px;margin-top: 19px;}
+.sheet .studio-fields input{border: 0;border-bottom: 1px solid #343c36;border-radius: 0;background: transparent;padding: 10px 0;color: #f2eee8;font-size: 15px;min-height: 44px;margin-top: 2px;}
+.sheet .studio-fields input:focus{border-bottom-color: #cbd6cd;outline: 2px solid #cbd6cd66;outline-offset: 3px;}
+.studio-fields .optional-details{margin-top: 22px;border-top: 1px solid #29332c;}
+.optional-details summary{display: flex;align-items: center;gap: 9px;list-style: none;cursor: pointer;padding: 16px 0 4px;font-size: 11px;color: #a5b0a8;}
+.optional-details summary::-webkit-details-marker{display: none;}
+.optional-details summary>span{margin-left: auto;font-size: 9px;color: #68776d;}
+.optional-details[open] summary>svg{transform: rotate(45deg);}
+.studio-footer{position: sticky;bottom: -29px;z-index: 3;display: flex;align-items: center;justify-content: space-between;gap: 10px;padding: 20px 0 12px;margin-top: 18px;background: linear-gradient(transparent, #040404 18%);}
+.studio-footer>span{display: flex;align-items: center;gap: 5px;font-size: 9px;color: #829087;}
+.studio-footer .primary-button,.card-studio .studio-save{background: #cbd6cd;border-color: #cbd6cd;color: #152019;}
+.studio-footer .primary-button{padding-inline: 17px;}
+@media (hover: hover){
+  .logo-option:hover,.item-type-grid button:hover{border-color: #8b9d90;}
+  .logo-upload:hover{color: #fff;}
+}
+@media (max-width: 360px){
+  .item-type-grid{gap: 5px;}.item-type-grid button{font-size: 9px;}
+  .studio-footer>span{max-width: 94px;line-height: 1.5;}
+  .logo-upload small{display: none;}
+}
+@media (prefers-reduced-motion: reduce){
+  .studio-preview .wallet-card{transition: none;transform: none;}
 }
 @media (hover: hover){.header-button:hover,.back-nav-btn:hover,.icon-button:hover,.card-picker button:not(.active):hover,.section-label .segmented button:not(.chosen):hover,.texture-grid button:not(.chosen):hover,.secondary-button:hover{
     background: #232323;

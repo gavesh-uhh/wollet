@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import Icon from "./icons";
+import { CardLogo, LogoPicker } from "./card-logo";
+import { CARD_LOGOS, getCardLogo } from "../lib/card-logos";
 import { centerCardCrop, recognizeCard, renderCardCanvas } from "../lib/card-ocr";
 import { detectCardNetwork, parseCardText, type ScannedCard } from "../lib/card-scan";
 import {
@@ -12,6 +14,7 @@ import {
   stringifySharePayload,
 } from "../lib/qr-share";
 import { shareDetailsDirectly } from "../lib/share-formatter";
+import { captureQrImage, readQrImage, type ScannedQrImage } from "../lib/qr-scan";
 import {
   changeVaultPasscode,
   createNewVault,
@@ -34,6 +37,8 @@ import type {
   WalletItem,
   WalletItemType,
 } from "../lib/vault-types";
+
+const WalletFeedbackContext = createContext("");
 
 export const THEMES = [
   { id: "graphite", label: "Graphite" },
@@ -87,26 +92,29 @@ export function Sheet({
   title,
   children,
   onClose,
+  busy = false,
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closingRef = useRef(false);
   const touch = useRef<{ x: number; y: number } | null>(null);
   const [closing, setClosing] = useState(false);
+  const feedback = useContext(WalletFeedbackContext);
 
   const requestClose = useCallback(() => {
-    if (closingRef.current) return;
+    if (closingRef.current || busy) return;
     closingRef.current = true;
     setClosing(true);
     timer.current = setTimeout(
       onClose,
       window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180
     );
-  }, [onClose]);
+  }, [onClose, busy]);
 
   useEffect(() => {
     const opener =
@@ -157,11 +165,13 @@ export function Sheet({
           <button
             className="icon-button"
             aria-label="Close"
+            disabled={busy}
             onClick={requestClose}
           >
             <Icon name="close" />
           </button>
         </div>
+        {feedback && <p className="notice" role="status">{feedback}</p>}
         {children}
       </div>
     </dialog>
@@ -187,10 +197,12 @@ export function WalletCard({
         <i />
       </div>
       <div className="card-top">
-        <span className="bank-name">
+        {getCardLogo(card.raw.logo) ? <span className="card-brand" title={card.bank}>
+          <CardLogo value={card.raw.logo} />
+        </span> : <span className="bank-name">
           {card.bank}
           <span className="bank-dot">.</span>
-        </span>
+        </span>}
         <span className="card-type">{card.network}</span>
       </div>
       <div className="card-bottom">
@@ -299,9 +311,10 @@ function itemToDisplayCard(item: WalletItem): WalletDisplayCard {
 }
 
 export default function Wallet() {
-  const [ready, setReady] = useState(() => getRawVaultSchema()?.hasPasscode ?? false);
-  const [locked, setLocked] = useState(() => getRawVaultSchema()?.hasPasscode ?? false);
+  const [ready, setReady] = useState(false);
+  const [locked, setLocked] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === "undefined") return true;
     try {
       return !localStorage.getItem("payit_onboarded_v2");
     } catch {
@@ -310,10 +323,10 @@ export default function Wallet() {
   });
   const [page, setPage] = useState<"wallet" | "settings">("wallet");
   const [modal, setModal] = useState<
-    "add" | "card" | "customize" | "edit" | "share" | "scan" | "cardscan" | "import" | "qrview" | null
+    "add" | "card" | "customize" | "edit" | "share" | "scan" | "cardscan" | "import" | "qrview" | "pin" | null
   >(null);
 
-  const [schema, setSchema] = useState<EncryptedVaultStorageSchema | null>(() => getRawVaultSchema());
+  const [schema, setSchema] = useState<EncryptedVaultStorageSchema | null>(null);
   const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
   const [vaultData, setVaultData] = useState<VaultData | null>(null);
 
@@ -323,6 +336,11 @@ export default function Wallet() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
   const [isRevealed, setIsRevealed] = useState(false);
+  const [removingPin, setRemovingPin] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const mutationPending = useRef(false);
+  const initialization = useRef<ReturnType<typeof createNewVault> | null>(null);
 
   const [scannedDraft, setScannedDraft] = useState<Partial<WalletItem> | null>(null);
   const [cardScanDraft, setCardScanDraft] = useState<ScannedCard | null>(null);
@@ -349,7 +367,8 @@ export default function Wallet() {
   useEffect(() => {
     const raw = getRawVaultSchema();
     if (!raw) {
-      createNewVault(DEFAULT_DEVICE_PIN, false)
+      initialization.current ??= createNewVault(DEFAULT_DEVICE_PIN, false);
+      initialization.current
         .then(({ schema, key, data }) => {
           setSchema(schema);
           setVaultKey(key);
@@ -358,7 +377,10 @@ export default function Wallet() {
           setLocked(false);
           setReady(true);
         })
-        .catch(() => setReady(true));
+        .catch((error: unknown) => {
+          setLoadError(error instanceof Error ? error.message : "Could not open wallet storage.");
+          setReady(true);
+        });
     } else {
       if (!raw.hasPasscode) {
         unlockVault(DEFAULT_DEVICE_PIN)
@@ -378,11 +400,25 @@ export default function Wallet() {
             setLocked(true);
             setReady(true);
           });
+      } else {
+        // Storage is read after hydration so locked wallets render consistently.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSchema(raw);
+        setLocked(true);
+        setReady(true);
       }
     }
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").then(async () => {
+        const registration = await navigator.serviceWorker.ready;
+        // Prepare the existing QR tools for use after an offline restart.
+        await Promise.allSettled([import("qrcode"), import("jsqr")]);
+        registration.active?.postMessage({
+          type: "CACHE_WALLET_ASSETS",
+          urls: performance.getEntriesByType("resource").map(entry => entry.name),
+        });
+      }).catch(() => {});
     }
 
     const onInstall = (e: Event) => {
@@ -397,7 +433,6 @@ export default function Wallet() {
         const parsed = parseScannedQr(window.location.href);
         if (parsed.valid && parsed.itemDraft) {
           // One-time deep-link import from the URL on mount.
-          // eslint-disable-next-line react-hooks/set-state-in-effect
           setScannedDraft(parsed.itemDraft);
           setModal("import");
         }
@@ -436,24 +471,99 @@ export default function Wallet() {
   };
 
   const handleLock = () => {
+    if (mutationPending.current) return;
     setVaultKey(null);
     setVaultData(null);
+    setModal(null);
+    setScannedDraft(null);
+    setCardScanDraft(null);
+    setIsRevealed(false);
     setLocked(true);
     setPinInput("");
     setPinError("");
   };
 
   const saveItems = async (items: WalletItem[]) => {
-    if (!vaultData || !vaultKey) return;
+    if (!vaultData || !vaultKey || mutationPending.current) return false;
+    mutationPending.current = true;
+    setSaving(true);
     const updatedData: VaultData = { ...vaultData, items };
-    setVaultData(updatedData);
     try {
       const s = await saveVaultData(updatedData, vaultKey);
       setSchema(s);
+      setVaultData(updatedData);
+      return true;
     } catch (e: unknown) {
       notify("Save error: " + (e instanceof Error ? e.message : "Unknown error"));
+      return false;
+    } finally {
+      mutationPending.current = false;
+      setSaving(false);
     }
   };
+
+  const updatePin = async (currentPin: string, newPin: string) => {
+    if (!vaultData || !vaultKey || mutationPending.current) return false;
+    mutationPending.current = true;
+    setSaving(true);
+    try {
+      if (schema?.hasPasscode) {
+        const verified = await unlockVault(currentPin);
+        if ("error" in verified) throw new Error("The current PIN is incorrect.");
+      }
+      const data = {
+        ...vaultData,
+        preferences: {
+          ...vaultData.preferences,
+          autoLockMinutes: removingPin ? 0 : vaultData.preferences.autoLockMinutes || 15,
+        },
+      };
+      const result = await changeVaultPasscode(
+        vaultKey, removingPin ? DEFAULT_DEVICE_PIN : newPin, data, !removingPin
+      );
+      setVaultKey(result.newKey);
+      setSchema(result.schema);
+      setVaultData(data);
+      setModal(null);
+      notify(removingPin ? "PIN removed. Wallet is in device mode." : "Master PIN updated.");
+      return true;
+    } catch (error: unknown) {
+      notify(error instanceof Error ? error.message : "Could not update PIN.");
+      return false;
+    } finally {
+      mutationPending.current = false;
+      setSaving(false);
+    }
+  };
+
+  // Honor the existing timeout, including time spent with the app in the background.
+  useEffect(() => {
+    if (locked || !schema?.hasPasscode || !vaultData?.preferences.autoLockMinutes) return;
+    const timeout = vaultData.preferences.autoLockMinutes * 60_000;
+    let lastActivity = Date.now();
+    const check = () => {
+      if (Date.now() - lastActivity < timeout || mutationPending.current) return false;
+      setVaultKey(null);
+      setVaultData(null);
+      setModal(null);
+      setScannedDraft(null);
+      setCardScanDraft(null);
+      setIsRevealed(false);
+      setLocked(true);
+      return true;
+    };
+    const activity = () => { if (!check()) lastActivity = Date.now(); };
+    const interval = setInterval(check, 1000);
+    window.addEventListener("pointerdown", activity);
+    window.addEventListener("keydown", activity);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("pointerdown", activity);
+      window.removeEventListener("keydown", activity);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [locked, schema?.hasPasscode, vaultData?.preferences.autoLockMinutes]);
 
   const openAddSheet = () => {
     setCardScanDraft(null);
@@ -579,6 +689,16 @@ export default function Wallet() {
     );
   }
 
+  if (loadError) {
+    return <div className="lock-view"><h1>Could not open your wallet</h1><p role="alert">{loadError}</p>
+      <button className="text-button" onClick={() => {
+        if (confirm("Reset this wallet? This permanently deletes all saved items on this device.")) {
+          resetLocalVault();
+          window.location.reload();
+        }
+      }}>Reset wallet</button></div>;
+  }
+
   if (locked) {
     return (
       <div className="app-shell">
@@ -619,6 +739,12 @@ export default function Wallet() {
                   Unlock Vault
                 </button>
               </form>
+              <button className="text-button" onClick={() => {
+                if (confirm("Reset this wallet? This permanently deletes all saved items. A forgotten PIN cannot be recovered.")) {
+                  resetLocalVault();
+                  window.location.reload();
+                }
+              }}>Forgot PIN? Reset wallet</button>
             </div>
           </main>
         </div>
@@ -884,6 +1010,7 @@ export default function Wallet() {
                         </button>
                         <button
                           className="secondary-button"
+                          disabled={!(current.raw as QrCodeItem).qrValue}
                           onClick={() => copyPrimaryValue(current.raw)}
                         >
                           <Icon name="copy" size={19} />
@@ -1027,23 +1154,27 @@ export default function Wallet() {
                     </div>
                     <button
                       className="text-button"
+                      disabled={saving}
                       onClick={() => {
-                        const newPin = prompt("Enter new 4-8 digit master PIN:");
-                        if (newPin && newPin.length >= 4 && vaultKey && vaultData) {
-                          changeVaultPasscode(vaultKey, newPin, vaultData).then(
-                            ({ schema: s }) => {
-                              setSchema(s);
-                              notify("Master PIN updated.");
-                            }
-                          );
-                        }
+                        setRemovingPin(false);
+                        setModal("pin");
                       }}
                     >
                       {schema?.hasPasscode ? "Change" : "Set PIN"}
                     </button>
                   </div>
                   {schema?.hasPasscode && (
-                    <button className="setting-row" onClick={handleLock}>
+                    <button className="setting-row" disabled={saving} onClick={() => {
+                      setRemovingPin(true);
+                      setModal("pin");
+                    }}>
+                      <span className="setting-icon"><Icon name="lock" /></span>
+                      <div><strong>Remove PIN</strong><p>Keep your items and return to device mode.</p></div>
+                      <Icon name="chevron" size={18} />
+                    </button>
+                  )}
+                  {schema?.hasPasscode && (
+                    <button className="setting-row" disabled={saving} onClick={handleLock}>
                       <span className="setting-icon">
                         <Icon name="lock" />
                       </span>
@@ -1130,6 +1261,7 @@ export default function Wallet() {
                   <button
                     className="setting-row"
                     style={{ color: "#ef4444" }}
+                    disabled={saving}
                     onClick={() => {
                       if (
                         confirm(
@@ -1158,7 +1290,7 @@ export default function Wallet() {
         </main>
       </div>
 
-      {toast && (
+      {toast && !modal && (
         <div className="toast" role="status">
           <Icon name="info" size={18} />
           {toast}
@@ -1166,6 +1298,11 @@ export default function Wallet() {
       )}
 
       {/* MODALS */}
+      <WalletFeedbackContext value={toast}>
+      {modal === "pin" && (
+        <PasscodeSheet hasPasscode={!!schema?.hasPasscode} removing={removingPin}
+          busy={saving} onSave={updatePin} onClose={() => { if (!saving) setModal(null); }} />
+      )}
       {modal === "card" && current && (
         <CardDetailsSheet
           card={current}
@@ -1175,9 +1312,9 @@ export default function Wallet() {
           onEdit={() => setModal("edit")}
           onShare={() => setModal("share")}
           onShareDetails={() => shareCardDetails(current)}
-          onDelete={() => {
+          onDelete={async () => {
             const next = (vaultData?.items || []).filter((i) => i.id !== current.id);
-            saveItems(next);
+            if (!(await saveItems(next))) return;
             setModal(null);
             notify("Item removed from wallet.");
           }}
@@ -1189,9 +1326,9 @@ export default function Wallet() {
         <QrCardSheet
           card={current}
           onCopy={() => copyPrimaryValue(current.raw)}
-          onDelete={() => {
+          onDelete={async () => {
             const next = (vaultData?.items || []).filter((i) => i.id !== current.id);
-            saveItems(next);
+            if (!(await saveItems(next))) return;
             setModal(null);
             notify("QR card removed from wallet.");
           }}
@@ -1201,17 +1338,19 @@ export default function Wallet() {
 
       {modal === "customize" && current && (
         <CardStyleSheet
+          busy={saving}
           card={current}
           onClose={() => setModal(null)}
-          onSave={(theme, pattern) => {
+          onSave={async (theme, pattern, logo) => {
             const items = vaultData?.items || [];
-            saveItems(
+            const saved = await saveItems(
               items.map((i) =>
                 i.id === current.id
-                  ? { ...i, colorTheme: theme, pattern, updatedAt: Date.now() }
+                  ? { ...i, colorTheme: theme, pattern, logo: logo || undefined, updatedAt: Date.now() }
                   : i
               )
             );
+            if (!saved) return;
             setModal(null);
             notify("Card style updated.");
           }}
@@ -1220,6 +1359,7 @@ export default function Wallet() {
 
       {(modal === "add" || modal === "edit") && (
         <CardEditorSheet
+          busy={saving}
           card={modal === "edit" ? current : undefined}
           scan={modal === "add" ? cardScanDraft : null}
           onScan={modal === "add" ? () => setModal("cardscan") : undefined}
@@ -1227,13 +1367,13 @@ export default function Wallet() {
             setCardScanDraft(null);
             setModal(null);
           }}
-          onSave={(savedItem) => {
+          onSave={async (savedItem) => {
             const items = vaultData?.items || [];
             const next =
               modal === "edit"
                 ? items.map((i) => (i.id === savedItem.id ? savedItem : i))
                 : [savedItem, ...items];
-            saveItems(next);
+            if (!(await saveItems(next))) return;
             setSelected(savedItem.id);
             setCardScanDraft(null);
             setModal(null);
@@ -1263,11 +1403,11 @@ export default function Wallet() {
       {modal === "scan" && (
         <ScanQrSheet
           onResult={(res) => {
-            const parsed = parseScannedQr(res);
+            const parsed = parseScannedQr(res.text);
             const draft =
               parsed.valid && parsed.itemDraft
                 ? parsed.itemDraft
-                : createQrCardDraft(res);
+                : createQrCardDraft(res.text, res.imageDataUrl);
             if (!draft) {
               notify(parsed.error || "Unrecognized QR code.");
               return;
@@ -1282,10 +1422,11 @@ export default function Wallet() {
 
       {modal === "import" && scannedDraft && (
         <ImportItemSheet
+          busy={saving}
           draft={scannedDraft}
-          onSave={(item) => {
+          onSave={async (item) => {
             const items = vaultData?.items || [];
-            saveItems([item, ...items]);
+            if (!(await saveItems([item, ...items]))) return;
             setSelected(item.id);
             setScannedDraft(null);
             setModal(null);
@@ -1297,6 +1438,7 @@ export default function Wallet() {
           }}
         />
       )}
+      </WalletFeedbackContext>
     </div>
   );
 }
@@ -1304,6 +1446,45 @@ export default function Wallet() {
 // ============================================================================
 // CARD DETAILS MODAL
 // ============================================================================
+function PasscodeSheet({ hasPasscode, removing, busy, onSave, onClose }: {
+  hasPasscode: boolean;
+  removing: boolean;
+  busy: boolean;
+  onSave: (currentPin: string, newPin: string) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  return (
+    <Sheet title={removing ? "Remove PIN" : hasPasscode ? "Change PIN" : "Set PIN"} onClose={onClose} busy={busy}>
+      <form onSubmit={async (event) => {
+        event.preventDefault();
+        if (!removing && (!/^\d{4,8}$/.test(newPin) || newPin !== confirmation)) {
+          setError("Enter matching PINs with 4 to 8 digits.");
+          return;
+        }
+        setError("");
+        if (!(await onSave(currentPin, newPin))) setError("PIN was not updated. Check the message and try again.");
+      }}>
+        {hasPasscode && <label>Current PIN<input type="password" inputMode="numeric" autoComplete="current-password"
+          required value={currentPin} onChange={(e) => setCurrentPin(e.target.value)} disabled={busy} /></label>}
+        {removing ? <p className="notice">Your items will stay saved. Anyone with access to this browser will be able to open them without a PIN.</p> : <>
+          <label>New PIN<input type="password" inputMode="numeric" autoComplete="new-password" required
+            pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={newPin} onChange={(e) => setNewPin(e.target.value)} disabled={busy} /></label>
+          <label>Confirm PIN<input type="password" inputMode="numeric" autoComplete="new-password" required
+            pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={confirmation} onChange={(e) => setConfirmation(e.target.value)} disabled={busy} /></label>
+        </>}
+        {error && <p className="scan-error" role="alert">{error}</p>}
+        <button className="primary-button full" type="submit" disabled={busy}>
+          {busy ? "Saving…" : removing ? "Remove PIN" : "Save PIN"}
+        </button>
+      </form>
+    </Sheet>
+  );
+}
+
 function CardDetailsSheet({
   card,
   isRevealed,
@@ -1488,24 +1669,55 @@ function CardDetailsSheet({
 function StyleControls({
   theme,
   pattern,
+  logo,
+  onLogo,
+  onLogoBusy,
   onTheme,
   onPattern,
 }: {
   theme: string;
   pattern: string;
+  logo: string;
+  onLogo: (logo: string) => void;
+  onLogoBusy: (busy: boolean) => void;
   onTheme: (theme: string) => void;
   onPattern: (pattern: CardPattern) => void;
 }) {
+  const [tab, setTab] = useState<"logo" | "color" | "texture">("logo");
   const shuffle = () => {
     onTheme(pickDifferent(theme, THEMES.map((t) => t.id)));
     onPattern(pickDifferent(pattern, PATTERNS) as CardPattern);
   };
 
   return (
-    <>
-      <div className="editor-section">
+    <div className="design-controls">
+      <div className="design-tabs" role="tablist" aria-label="Card appearance">
+        {(["logo", "color", "texture"] as const).map(panel => <button type="button" key={panel}
+          role="tab" id={`design-tab-${panel}`} aria-controls={`design-panel-${panel}`} aria-selected={tab === panel}
+          tabIndex={tab === panel ? 0 : -1} onClick={() => setTab(panel)}
+          onKeyDown={event => {
+            const tabs = ["logo", "color", "texture"] as const;
+            const index = tabs.indexOf(panel);
+            let next = index;
+            if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+            else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+            else if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = tabs.length - 1;
+            else return;
+            event.preventDefault(); setTab(tabs[next]);
+            document.getElementById(`design-tab-${tabs[next]}`)?.focus();
+          }}>
+          <Icon name={panel === "logo" ? "bank" : panel === "color" ? "palette" : "card"} size={16} />
+          {panel === "logo" ? "Logo" : panel === "color" ? "Color" : "Texture"}
+        </button>)}
+      </div>
+      <div id="design-panel-logo" role="tabpanel" aria-labelledby="design-tab-logo" hidden={tab !== "logo"}>
+        <div className="design-panel-heading"><span>Give it a familiar face</span><small>Find a bank, brand, or something entirely yours.</small></div>
+        <LogoPicker value={logo} onChange={onLogo} onBusyChange={onLogoBusy} />
+      </div>
+      <div id="design-panel-color" role="tabpanel" aria-labelledby="design-tab-color" hidden={tab !== "color"}>
         <div className="style-head">
-          <span className="field-label">Color</span>
+          <span className="field-label">{THEMES.find(t => t.id === theme)?.label || "Color"}</span>
           <button
             type="button"
             className="text-button style-shuffle"
@@ -1532,8 +1744,8 @@ function StyleControls({
         </div>
       </div>
 
-      <div className="editor-section">
-        <span className="field-label">Texture</span>
+      <div id="design-panel-texture" role="tabpanel" aria-labelledby="design-tab-texture" hidden={tab !== "texture"}>
+        <div className="design-panel-heading"><span>A little character</span><small>Six finishes. Your choice.</small></div>
         <div className="texture-grid">
           {PATTERNS.map((p) => (
             <button
@@ -1543,44 +1755,55 @@ function StyleControls({
               aria-pressed={pattern === p}
               onClick={() => onPattern(p)}
             >
-              {p[0].toUpperCase() + p.slice(1)}
+              <span className={`texture-sample theme-${theme}`} data-texture={p} aria-hidden="true" />
+              <span>{p[0].toUpperCase() + p.slice(1)}</span>
             </button>
           ))}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
 function CardStyleSheet({
+  busy,
   card,
   onClose,
   onSave,
 }: {
+  busy: boolean;
   card: WalletDisplayCard;
   onClose: () => void;
-  onSave: (theme: string, pattern: CardPattern) => void;
+  onSave: (theme: string, pattern: CardPattern, logo: string) => void;
 }) {
   const [theme, setTheme] = useState(card.theme);
   const [pattern, setPattern] = useState<CardPattern>(card.pattern as CardPattern);
-  const preview: WalletDisplayCard = { ...card, theme, pattern };
+  const [logo, setLogo] = useState(card.raw.logo || "");
+  const [logoBusy, setLogoBusy] = useState(false);
+  const preview: WalletDisplayCard = { ...card, theme, pattern, raw: { ...card.raw, logo } };
 
   return (
-    <Sheet title="Card style" onClose={onClose}>
-      <WalletCard card={preview} compact />
+    <Sheet title="Make it yours" onClose={onClose} busy={busy || logoBusy}>
+      <div className="card-studio">
+      <fieldset className="studio-fieldset" disabled={busy}>
+      <div className="studio-preview"><WalletCard card={preview} compact /><span className="preview-caption">Your card, your way.</span></div>
       <StyleControls
+        logo={logo} onLogo={setLogo} onLogoBusy={setLogoBusy}
         theme={theme}
         pattern={pattern}
         onTheme={setTheme}
         onPattern={setPattern}
       />
       <button
-        className="primary-button full"
-        onClick={() => onSave(theme, pattern)}
+        className="primary-button full studio-save"
+        disabled={busy || logoBusy}
+        onClick={() => onSave(theme, pattern, logo)}
       >
         <Icon name="check" size={18} />
-        Apply style
+        {busy ? "Saving…" : "Save look"}
       </button>
+      </fieldset>
+      </div>
     </Sheet>
   );
 }
@@ -1589,12 +1812,14 @@ function CardStyleSheet({
 // CARD EDITOR MODAL (ADD / EDIT)
 // ============================================================================
 function CardEditorSheet({
+  busy,
   card,
   scan,
   onScan,
   onClose,
   onSave,
 }: {
+  busy: boolean;
   card?: WalletDisplayCard;
   scan?: ScannedCard | null;
   onScan?: () => void;
@@ -1629,15 +1854,15 @@ function CardEditorSheet({
   const [pattern, setPattern] = useState(
     card?.pattern || (scan?.kind === "other" ? "plain" : "orbit")
   );
-  const [network, setNetwork] = useState(
-    card?.network ||
-      existingCard?.cardType ||
-      existingDocument?.documentType ||
-      (scan
-        ? scan.kind === "other"
-          ? scan.documentType
-          : scan.cardType
-        : "Savings")
+  const [network, setNetwork] = useState<string>(
+    existingCard?.cardType ||
+    existingBank?.accountType ||
+    existingDocument?.documentType ||
+    (scan
+      ? scan.kind === "other"
+        ? scan.documentType
+        : scan.cardType
+      : "Savings")
   );
 
   // Auxiliary fields
@@ -1653,6 +1878,20 @@ function CardEditorSheet({
         : "")
   );
   const [numberUnverified, setNumberUnverified] = useState(scan?.numberValid === false);
+  const [stage, setStage] = useState<"design" | "details">(card || scan ? "details" : "design");
+  const [logo, setLogo] = useState(existingRaw?.logo || "");
+  const [logoBusy, setLogoBusy] = useState(false);
+  const subtypes = type === "bank_account"
+    ? ["Savings", "Checking", "Current", "Business", "Deposit", "Other"]
+    : type === "credit_card" ? ["Debit", "Credit", "Prepaid"]
+    : type === "id_document" ? ["Campus card", "Membership", "National ID", "Passport", "Driver's License", "Tax ID / SSN", "Other"]
+    : [];
+  const selectLogo = (value: string) => {
+    setLogo(value);
+    const selectedLogo = CARD_LOGOS.find(logo => logo.id === value);
+    const previousLogo = CARD_LOGOS.find(choice => choice.id === logo);
+    if (selectedLogo && (!bank.trim() || bank === previousLogo?.issuer)) setBank(selectedLogo.issuer);
+  };
 
   const previewCard: WalletDisplayCard = {
     id: card?.id || "preview",
@@ -1671,11 +1910,13 @@ function CardEditorSheet({
     pattern,
     network,
     type,
-    raw: {} as WalletItem,
+    raw: { ...existingRaw, logo } as WalletItem,
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy || logoBusy) return;
+    if (stage === "design") { setStage("details"); return; }
     const id = card?.id || `item-${Date.now()}`;
     const base: Record<string, unknown> = {
       ...(existingRaw || {}),
@@ -1684,6 +1925,7 @@ function CardEditorSheet({
       title: name.trim() || bank.trim() || "Other card",
       colorTheme: theme,
       pattern,
+      logo: logo || undefined,
       isFavorite: existingRaw?.isFavorite || false,
       tags: existingRaw?.tags || [],
       createdAt: existingRaw?.createdAt || Date.now(),
@@ -1695,7 +1937,7 @@ function CardEditorSheet({
       base.accountHolder = name.trim();
       base.accountNumber = number.trim();
       base.accountType = network;
-      base.currency = "USD";
+      base.currency = existingBank?.currency || "USD";
       base.routingOrIfsc = routing.trim();
       base.branchName = branch.trim();
     } else if (type === "credit_card") {
@@ -1723,46 +1965,41 @@ function CardEditorSheet({
   };
 
   return (
-    <Sheet title={card ? "Edit card" : "Add to wallet"} onClose={onClose}>
-      <form onSubmit={handleSubmit}>
-        <WalletCard card={previewCard} compact />
-
-        {!card && onScan && (
-          <button type="button" className="scan-invite" onClick={onScan}>
-            <span className="scan-invite-icon">
-              <Icon name="camera" size={20} />
-            </span>
-            <span>
-              <strong>Scan a card</strong>
-              <small>Fill it in from your camera or a photo</small>
-            </span>
-            <Icon name="chevron" size={16} />
+    <Sheet title={card ? "Edit your card" : "A new addition"} onClose={onClose} busy={busy || logoBusy}>
+      <form className={`card-studio ${stage === "details" ? "is-details" : ""}`} onSubmit={handleSubmit}>
+        <fieldset className="studio-fieldset" disabled={busy}>
+        <div className="studio-preview"><WalletCard card={previewCard} compact />
+          <span className="preview-caption">{stage === "design" ? "A little more you." : "Looking good. Add the essentials."}</span>
+        </div>
+        <div className="studio-steps" aria-label="Card setup">
+          <button type="button" aria-pressed={stage === "design"} disabled={busy || logoBusy} onClick={() => setStage("design")}>
+            <Icon name="palette" size={17} />The look
           </button>
-        )}
-
-        {scan && (
-          <p className={`notice scan-notice ${numberUnverified ? "scan-warning" : ""}`}>
-            <Icon name="info" />
-            {numberUnverified
-              ? "Check the card number: it did not pass the checksum. OCR can misread a digit."
-              : "Scanned on this device. Check each field before saving."}
-          </p>
-        )}
+          <button type="button" aria-pressed={stage === "details"} disabled={busy || logoBusy} onClick={() => setStage("details")}>
+            <Icon name="card" size={17} />The details
+          </button>
+        </div>
+        {stage === "design" && <div className="studio-design">
 
         {!card && (
           <div className="editor-section">
-            <span className="field-label">Type</span>
-            <div className="segmented">
+            <div className="style-head"><span className="field-label">What are we adding?</span>
+              {onScan && <button type="button" className="text-button studio-scan-shortcut" onClick={onScan}>
+                <Icon name="scan" size={15} />Scan a card
+              </button>}
+            </div>
+            <div className="item-type-grid">
               {[
-                { id: "bank_account", label: "Bank" },
-                { id: "credit_card", label: "Card" },
-                { id: "upi_handle", label: "Payment" },
-                { id: "id_document", label: "Other card" },
+                { id: "bank_account", label: "Account", icon: "bank" },
+                { id: "credit_card", label: "Card", icon: "card" },
+                { id: "upi_handle", label: "Payment", icon: "lightning" },
+                { id: "id_document", label: "ID / member", icon: "fileText" },
               ].map((t) => (
                 <button
                   type="button"
                   key={t.id}
                   className={type === t.id ? "chosen" : ""}
+                  aria-pressed={type === t.id}
                   onClick={() => {
                     setType(t.id as WalletItemType);
                     setNetwork(
@@ -1776,22 +2013,30 @@ function CardEditorSheet({
                     );
                   }}
                 >
-                  {t.label}
+                  <Icon name={t.icon} size={23} /><span>{t.label}</span>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        {!card && (
           <StyleControls
+            logo={logo} onLogo={selectLogo} onLogoBusy={setLogoBusy}
             theme={theme}
             pattern={pattern}
             onTheme={setTheme}
             onPattern={setPattern}
           />
-        )}
+        </div>}
 
+        {stage === "details" && <div className="studio-fields">
+        {scan && <p className={`notice ${numberUnverified ? "scan-warning" : ""}`}>
+          <Icon name="scan" size={17} />{numberUnverified ? "Check the number. A digit may have been misread." : "Scanned for you. Check the details before saving."}
+        </p>}
+        {subtypes.length > 0 && <div className="subtype-choices" aria-label="Card or account type">
+          {subtypes.map(subtype => <button key={subtype} type="button" aria-pressed={network === subtype}
+            className={network === subtype ? "chosen" : ""} onClick={() => setNetwork(subtype)}>{subtype}</button>)}
+        </div>}
         <label>
           {type === "credit_card"
             ? "Cardholder name"
@@ -1808,7 +2053,6 @@ function CardEditorSheet({
           />
         </label>
 
-        <div className="form-grid">
           <label>
             {type === "credit_card"
               ? "Bank or issuer"
@@ -1824,38 +2068,10 @@ function CardEditorSheet({
               onChange={(e) => setBank(e.target.value)}
             />
           </label>
-          <label>
-            Type
-            <select value={network} onChange={(e) => setNetwork(e.target.value)}>
-              {type === "bank_account" ? (
-                <>
-                  <option>Savings</option>
-                  <option>Checking</option>
-                  <option>Current</option>
-                  <option>Account</option>
-                </>
-              ) : type === "credit_card" ? (
-                <>
-                  <option>Debit</option>
-                  <option>Credit</option>
-                  <option>Prepaid</option>
-                </>
-              ) : type === "id_document" ? (
-                <>
-                  <option>Campus card</option>
-                  <option>Membership</option>
-                  <option>Other</option>
-                </>
-              ) : (
-                <option>Payment</option>
-              )}
-            </select>
-          </label>
-        </div>
 
         <label>
           {type === "credit_card"
-            ? "Card number (encrypted)"
+            ? "Card number"
             : type === "bank_account"
             ? "Account number"
             : type === "id_document"
@@ -1879,12 +2095,16 @@ function CardEditorSheet({
               Expiry (MM / YY)
               <div style={{ display: "flex", gap: 6 }}>
                 <input
+                  aria-label="Expiry month"
+                  placeholder="MM"
                   inputMode="numeric"
                   maxLength={2}
                   value={expMonth}
                   onChange={(e) => setExpMonth(e.target.value)}
                 />
                 <input
+                  aria-label="Expiry year"
+                  placeholder="YY"
                   inputMode="numeric"
                   maxLength={2}
                   value={expYear}
@@ -1895,6 +2115,7 @@ function CardEditorSheet({
             <label>
               CVV
               <input
+                type="password"
                 inputMode="numeric"
                 autoComplete="off"
                 maxLength={4}
@@ -1906,6 +2127,7 @@ function CardEditorSheet({
         )}
 
         {type === "id_document" && (
+          <details className="optional-details"><summary>Expiry date <span>Optional</span><Icon name="plus" size={14} /></summary>
           <label>
             Expiry <span className="optional">optional</span>
             <input
@@ -1915,9 +2137,11 @@ function CardEditorSheet({
               onChange={(e) => setExpiryDate(e.target.value)}
             />
           </label>
+          </details>
         )}
 
         {type === "bank_account" && (
+          <details className="optional-details"><summary>Branch & routing <span>Optional</span><Icon name="plus" size={14} /></summary>
           <div className="form-grid">
             <label>
               Branch <span className="optional">optional</span>
@@ -1937,11 +2161,19 @@ function CardEditorSheet({
               />
             </label>
           </div>
+          </details>
         )}
+        </div>}
 
-        <button type="submit" className="primary-button full" style={{ marginTop: 22 }}>
-          Save to wallet <Icon name="check" size={18} />
-        </button>
+        <div className="studio-footer">
+          <span><Icon name="lock" size={12} />Only on this device</span>
+          {stage === "design" ? <button type="button" disabled={busy || logoBusy} className="primary-button" onClick={() => setStage("details")}>
+            Add details <Icon name="chevron" size={17} />
+          </button> : <button type="submit" disabled={busy || logoBusy} className="primary-button">
+            {busy ? "Saving…" : card ? "Save changes" : "Save card"} <Icon name="check" size={18} />
+          </button>}
+        </div>
+        </fieldset>
       </form>
     </Sheet>
   );
@@ -1952,41 +2184,44 @@ function CardEditorSheet({
 // ============================================================================
 function QrCodeImage({
   value,
+  imageDataUrl,
   size = 240,
   alt = "QR code",
 }: {
   value: string;
+  imageDataUrl?: string;
   size?: number;
   alt?: string;
 }) {
-  const [url, setUrl] = useState("");
-  const [failed, setFailed] = useState(false);
+  const [result, setResult] = useState<{ value: string; url?: string; failed?: boolean } | null>(null);
 
   useEffect(() => {
     let active = true;
+    if (imageDataUrl) return;
     import("qrcode")
       .then((m) =>
         m.default.toDataURL(value, {
           width: size * 2,
-          margin: 1,
+          margin: 4,
           color: { dark: "#0a0a0a", light: "#ffffff" },
           errorCorrectionLevel: "M",
         })
       )
       .then((dataUrl) => {
-        if (active) setUrl(dataUrl);
+        if (active) setResult({ value, url: dataUrl });
       })
       .catch(() => {
-        if (active) setFailed(true);
+        if (active) setResult({ value, failed: true });
       });
     return () => {
       active = false;
     };
-  }, [value, size]);
+  }, [value, size, imageDataUrl]);
 
-  if (failed) {
-    return <p className="qr-caption">This QR code is too large to display.</p>;
+  if (!imageDataUrl && result?.value === value && result.failed) {
+    return <p className="qr-caption" role="alert">Could not display this code. Try importing its original image.</p>;
   }
+  const url = imageDataUrl || (result?.value === value ? result.url : "");
   if (!url) return <div className="loading-dot" />;
   return (
     // eslint-disable-next-line @next/next/no-img-element -- QR is a generated data URL.
@@ -2010,13 +2245,13 @@ function QrCardSheet({
   return (
     <Sheet title={card.name} onClose={onClose}>
       <div className="qr-modal-box">
-        <div className="qr-frame qr-card-frame">
-          <QrCodeImage value={qr.qrValue} size={260} alt={`${card.name} QR code`} />
+        <div className={`qr-frame qr-card-frame ${!qr.qrValue && qr.imageDataUrl ? "code-image-frame" : ""}`}>
+          <QrCodeImage value={qr.qrValue} imageDataUrl={qr.imageDataUrl} size={260} alt={`${card.name} saved code`} />
         </div>
         <p className="qr-caption">This QR code is stored on this device only.</p>
-        <button className="primary-button full" onClick={onCopy}>
+        {qr.qrValue && <button className="primary-button full" onClick={onCopy}>
           <Icon name="copy" size={17} /> Copy QR content
-        </button>
+        </button>}
         <button
           className="danger-button full"
           onClick={() => {
@@ -2182,18 +2417,24 @@ function ScanQrSheet({
   onError,
   onClose,
 }: {
-  onResult: (res: string) => void;
+  onResult: (res: ScannedQrImage) => void;
   onError: (err: string) => void;
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [reading, setReading] = useState(false);
+  const callbacks = useRef({ onResult, onError });
+  const readingRef = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => { callbacks.current = { onResult, onError }; }, [onResult, onError]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
     let active = true;
     let frameId = 0;
     let last = 0;
+    mounted.current = true;
 
     (async () => {
       try {
@@ -2201,7 +2442,7 @@ function ScanQrSheet({
           throw new Error("Camera unavailable. You can upload a photo of the QR code instead.");
         }
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 640 } },
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false,
         });
 
@@ -2222,15 +2463,16 @@ function ScanQrSheet({
         const tick = (now: number) => {
           if (!active) return;
           const v = videoRef.current;
-          if (v && ctx && v.readyState >= 2 && now - last > 180) {
+          if (!readingRef.current && v && ctx && v.readyState >= 2 && now - last > 240) {
             last = now;
-            canvas.width = v.videoWidth;
-            canvas.height = v.videoHeight;
-            ctx.drawImage(v, 0, 0);
+            const scale = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+            canvas.width = Math.round(v.videoWidth * scale);
+            canvas.height = Math.round(v.videoHeight * scale);
+            ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
             const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const code = jsQR(img.data, canvas.width, canvas.height);
-            if (code && code.data) {
-              onResult(code.data);
+            if (code) {
+              callbacks.current.onResult({ text: code.data, imageDataUrl: captureQrImage(canvas, code) });
               return;
             }
           }
@@ -2239,7 +2481,7 @@ function ScanQrSheet({
         frameId = requestAnimationFrame(tick);
       } catch (e: unknown) {
         if (active) {
-          onError(
+          callbacks.current.onError(
             (e instanceof Error && e.message) ||
               "Camera unavailable. You can upload an image."
           );
@@ -2249,35 +2491,28 @@ function ScanQrSheet({
 
     return () => {
       active = false;
+      mounted.current = false;
       cancelAnimationFrame(frameId);
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [onResult, onError]);
+  }, []);
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    e.target.value = "";
+    if (!file || readingRef.current) return;
+    readingRef.current = true;
+    setReading(true);
     try {
-      const img = new Image();
-      img.onload = async () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        ctx.drawImage(img, 0, 0);
-        const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const jsQR = (await import("jsqr")).default;
-        const code = jsQR(data.data, canvas.width, canvas.height);
-        if (code && code.data) {
-          onResult(code.data);
-        } else {
-          onError("No QR code found in photo.");
-        }
-      };
-      img.src = URL.createObjectURL(file);
-    } catch {
-      onError("Failed to read image.");
+      const result = await readQrImage(file);
+      if (!mounted.current) return;
+      if (!result.text && !confirm("No readable QR text was found. Save the original code image instead?")) return;
+      callbacks.current.onResult(result);
+    } catch (error: unknown) {
+      if (mounted.current) callbacks.current.onError(error instanceof Error ? error.message : "Failed to read image.");
+    } finally {
+      readingRef.current = false;
+      if (mounted.current) setReading(false);
     }
   };
 
@@ -2296,7 +2531,7 @@ function ScanQrSheet({
         onChange={handleFile}
       />
 
-      <button className="primary-button full" onClick={() => fileRef.current?.click()}>
+      <button className="primary-button full" disabled={reading} onClick={() => fileRef.current?.click()}>
         <Icon name="upload" size={17} /> Scan from Photo Library
       </button>
 
@@ -2415,7 +2650,7 @@ function CardScanSheet({
       video,
       video.videoWidth,
       video.videoHeight,
-      centerCardCrop(video.videoWidth, video.videoHeight)
+      centerCardCrop(video.videoWidth, video.videoHeight, video.clientWidth, video.clientHeight)
     );
     void analyze(canvas);
   };
@@ -2506,10 +2741,12 @@ function CardScanSheet({
 // IMPORT SCANNED ITEM MODAL
 // ============================================================================
 function ImportItemSheet({
+  busy,
   draft,
   onSave,
   onClose,
 }: {
+  busy: boolean;
   draft: Partial<WalletItem>;
   onSave: (item: WalletItem) => void;
   onClose: () => void;
@@ -2521,11 +2758,11 @@ function ImportItemSheet({
   const [title, setTitle] = useState(qr?.title || "Scanned QR");
 
   return (
-    <Sheet title="Save to wallet" onClose={onClose}>
+    <Sheet title="Save to wallet" onClose={onClose} busy={busy}>
       {qr ? (
         <>
-          <div className="qr-frame qr-card-frame">
-            <QrCodeImage value={qr.qrValue || ""} size={230} alt="Scanned QR" />
+          <div className={`qr-frame qr-card-frame ${!qr.qrValue && qr.imageDataUrl ? "code-image-frame" : ""}`}>
+            <QrCodeImage value={qr.qrValue || ""} imageDataUrl={qr.imageDataUrl} size={230} alt="Scanned code" />
           </div>
           <label>
             Name
@@ -2602,6 +2839,7 @@ function ImportItemSheet({
 
       <button
         className="primary-button full"
+        disabled={busy}
         onClick={() => {
           onSave({
             ...draft,
@@ -2615,7 +2853,7 @@ function ImportItemSheet({
           } as WalletItem);
         }}
       >
-        Save to wallet <Icon name="check" size={18} />
+        {busy ? "Saving…" : "Save to wallet"} <Icon name="check" size={18} />
       </button>
     </Sheet>
   );

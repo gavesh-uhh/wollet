@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { CARD_LOGOS, getCardLogo, searchCardLogos, prepareRegistryLogo } from "../lib/card-logos.ts";
 import {
   deriveKeyFromPasscode,
   encryptText,
@@ -146,7 +149,7 @@ test("QR Cards: arbitrary payloads are saved verbatim", () => {
   assert.ok(draft);
   assert.equal(draft.type, "qr_code");
   assert.equal(draft.title, "Scanned QR");
-  assert.equal(draft.qrValue, payload);
+  assert.equal(draft.qrValue, `  ${payload}  `);
   assert.equal(createQrCardDraft("   "), null);
 });
 
@@ -331,4 +334,212 @@ test("Vault Storage: create, save, unlock cycle", async () => {
   const newPinAttempt = await unlockVault("9999");
   assert.ok("data" in newPinAttempt);
   assert.equal(newPinAttempt.data.items.length, 2);
+
+  // The next edit must use the new active key, and stale keys must not corrupt storage.
+  const beforeStaleSave = JSON.stringify(getRawVaultSchema());
+  await assert.rejects(saveVaultData(updatedData, rightUnlock.key), /key has changed/);
+  assert.equal(JSON.stringify(getRawVaultSchema()), beforeStaleSave);
+  await saveVaultData({ ...updatedData, items: updatedData.items.slice(0, 1) }, changed.newKey);
+  const afterEdit = await unlockVault("9999");
+  assert.ok("data" in afterEdit);
+  assert.equal(afterEdit.data.items.length, 1);
+});
+
+function mockLocalStorage() {
+  const entries = new Map();
+  globalThis.localStorage = {
+    getItem: key => entries.get(key) ?? null,
+    setItem: (key, value) => entries.set(key, String(value)),
+    removeItem: key => entries.delete(key),
+  };
+  return entries;
+}
+
+test("PIN: 0000 is protected; explicit removal keeps items in device mode", async () => {
+  mockLocalStorage();
+  const { createNewVault, changeVaultPasscode, unlockVault, DEFAULT_DEVICE_PIN } = await import("../lib/vault-storage.ts");
+  const initial = await createNewVault();
+  const data = { ...initial.data, items: [{ id: "mine", type: "custom", title: "Keep me" }] };
+  const protectedVault = await changeVaultPasscode(initial.key, "0000", data);
+  assert.equal(protectedVault.schema.hasPasscode, true);
+  await assert.rejects(changeVaultPasscode(protectedVault.newKey, "123", data), /4 to 8 digits/);
+  await assert.rejects(changeVaultPasscode(protectedVault.newKey, "abcd", data), /4 to 8 digits/);
+  await assert.rejects(changeVaultPasscode(protectedVault.newKey, "123456789", data), /4 to 8 digits/);
+  const removed = await changeVaultPasscode(protectedVault.newKey, DEFAULT_DEVICE_PIN, data, false);
+  assert.equal(removed.schema.hasPasscode, false);
+  const opened = await unlockVault(DEFAULT_DEVICE_PIN);
+  assert.ok("data" in opened);
+  assert.equal(opened.data.items[0].title, "Keep me");
+});
+
+test("Storage: failed writes and corrupt startup never destroy the existing vault", async () => {
+  const entries = mockLocalStorage();
+  const { createNewVault, saveVaultData, VAULT_STORAGE_KEY } = await import("../lib/vault-storage.ts");
+  const initial = await createNewVault("1234", true);
+  const before = entries.get(VAULT_STORAGE_KEY);
+  localStorage.setItem = () => { throw new Error("Storage quota exceeded"); };
+  await assert.rejects(saveVaultData(initial.data, initial.key), /quota/);
+  assert.equal(entries.get(VAULT_STORAGE_KEY), before);
+  entries.set(VAULT_STORAGE_KEY, "broken-json");
+  await assert.rejects(createNewVault(), /already exists/);
+  assert.equal(entries.get(VAULT_STORAGE_KEY), "broken-json");
+});
+
+test("Reset: legacy cards do not reappear after clearing the vault", async () => {
+  const entries = mockLocalStorage();
+  const { resetLocalVault, VAULT_STORAGE_KEY, LEGACY_STORAGE_KEY } = await import("../lib/vault-storage.ts");
+  entries.set(VAULT_STORAGE_KEY, "vault");
+  entries.set(LEGACY_STORAGE_KEY, "old cards");
+  entries.set("unrelated", "keep");
+  resetLocalVault();
+  assert.equal(entries.has(VAULT_STORAGE_KEY), false);
+  assert.equal(entries.has(LEGACY_STORAGE_KEY), false);
+  assert.equal(entries.get("unrelated"), "keep");
+});
+
+test("QR: original code images are encrypted and restored, even without decoded text", async () => {
+  mockLocalStorage();
+  const { createNewVault, unlockVault, getRawVaultSchema } = await import("../lib/vault-storage.ts");
+  const image = "data:image/png;base64,originalCodePixels";
+  const draft = createQrCardDraft("", image);
+  assert.ok(draft);
+  await createNewVault("1234", true, [{ ...draft, id: "qr-original" }]);
+  assert.equal(JSON.stringify(getRawVaultSchema()).includes(image), false);
+  const opened = await unlockVault("1234");
+  assert.ok("data" in opened);
+  assert.equal(opened.data.items[0].imageDataUrl, image);
+  assert.equal(opened.data.items[0].qrValue, "");
+});
+
+test("QR imports decode percent signs exactly once", () => {
+  const payload = { _payit: 1, kind: "upi_handle", title: "100% mine", data: { handle: "test@upi" } };
+  const result = parseScannedQr(`https://example.com/?import=${encodeURIComponent(JSON.stringify(payload))}`);
+  assert.equal(result.valid, true);
+  assert.equal(result.itemDraft.title, "100% mine");
+});
+
+test("Card logos: only bundled or local PNG images are displayed", () => {
+  assert.deepEqual(CARD_LOGOS.map(logo => logo.id), ["seylan", "boc", "chase"]);
+  assert.equal(getCardLogo("seylan").src, "/logos/seylan.png");
+  assert.equal(getCardLogo("data:image/png;base64,aGVsbG8=").name, "Custom logo");
+  assert.equal(getCardLogo("https://tracking.example/logo.png"), null);
+  assert.equal(getCardLogo("data:image/svg+xml;base64,PHN2Zz4="), null);
+  assert.equal(getCardLogo("data:image/png;base64," + "a".repeat(250_000)), null);
+  assert.equal(getCardLogo(undefined), null);
+});
+
+test("Card logos survive encrypted saves, edits, removal and reopening", async () => {
+  mockLocalStorage();
+  const { createNewVault, saveVaultData, unlockVault, getRawVaultSchema } = await import("../lib/vault-storage.ts");
+  const custom = "data:image/png;base64,aGVsbG8=";
+  const initial = await createNewVault("1234", true, [
+    { id: "logo-card", type: "custom", title: "My bank", logo: "boc" },
+    { id: "custom-card", type: "custom", title: "My logo", logo: custom },
+  ]);
+  assert.equal(JSON.stringify(getRawVaultSchema()).includes(custom), false);
+  const reopened = await unlockVault("1234");
+  assert.ok("data" in reopened);
+  assert.equal(reopened.data.items[0].logo, "boc");
+  assert.equal(reopened.data.items[1].logo, custom);
+  await saveVaultData({ ...initial.data, items: initial.data.items.map(item => ({ ...item, logo: undefined })) }, initial.key);
+  const removed = await unlockVault("1234");
+  assert.ok("data" in removed);
+  assert.equal(removed.data.items[0].logo, undefined);
+  assert.equal(removed.data.items[1].logo, undefined);
+});
+
+test("Logo registry: broad local search and safe saved logo references", () => {
+  const { entries } = JSON.parse(readFileSync(new URL("../public/logos/registry/index.json", import.meta.url), "utf8"));
+  assert.ok(entries.length > 3000);
+  assert.ok(searchCardLogos(entries, "spotify").some(entry => entry.name === "Spotify"));
+  assert.ok(searchCardLogos(entries, "HSBC").some(entry => entry.name === "HSBC"));
+  assert.ok(searchCardLogos(entries, "american express").some(entry => entry.name === "American Express"));
+  assert.equal(searchCardLogos(CARD_LOGOS, "Bank of Ceylon")[0].id, "boc");
+  assert.equal(searchCardLogos(entries, "thisbranddoesnotexist123456").length, 0);
+  assert.equal(searchCardLogos(entries, "ශ්‍රී").length, 0);
+  assert.equal(getCardLogo("registry:spotify#Spotify").src, "/logos/registry/spotify.svg");
+  assert.equal(getCardLogo("registry:americanexpress#American%20Express").name, "American Express");
+  assert.equal(getCardLogo("registry:../secrets#Example"), null);
+  assert.equal(getCardLogo("registry:spotify#%invalid"), null);
+  assert.equal(getCardLogo("registry:https://example.com#Example"), null);
+});
+
+test("Logo registry: selecting a brand caches its artwork for offline use", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const writes = [];
+  try {
+    globalThis.fetch = async src => {
+      assert.equal(src, "/logos/registry/spotify.svg");
+      return new Response("<svg/>", { headers: { "Content-Type": "image/svg+xml" } });
+    };
+    globalThis.caches = { open: async name => {
+      assert.equal(name, "wollet-selected-logos-v1");
+      return { put: async (src, response) => writes.push([src, await response.text()]) };
+    } };
+    await prepareRegistryLogo("registry:spotify#Spotify");
+    assert.deepEqual(writes, [["/logos/registry/spotify.svg", "<svg/>"]]);
+    await assert.rejects(prepareRegistryLogo("https://outside.test/logo.svg"), /from the registry/);
+    globalThis.fetch = async () => { throw new Error("Offline"); };
+    await assert.rejects(prepareRegistryLogo("registry:spotify#Spotify"), /offline/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) delete globalThis.caches;
+    else globalThis.caches = originalCaches;
+  }
+});
+
+function serviceWorkerHarness() {
+  const handlers = new Map();
+  const cached = new Map();
+  let online = true;
+  const key = request => new URL(typeof request === "string" ? request : request.url, "https://wallet.test").href;
+  const fetcher = async request => {
+    if (!online) throw new Error("Offline");
+    return new Response(key(request) === "https://wallet.test/"
+      ? '<html><script src="/_next/static/app.js"></script><link href="/_next/static/app.css" rel="stylesheet"></html>'
+      : "static asset");
+  };
+  const cache = {
+    match: async request => cached.get(key(request))?.clone(),
+    put: async (request, response) => cached.set(key(request), response),
+    add: async request => cached.set(key(request), await fetcher(request)),
+    addAll: async requests => { await Promise.all(requests.map(cache.add)); },
+  };
+  runInNewContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), {
+    self: { location: { origin: "https://wallet.test" }, addEventListener: (type, fn) => handlers.set(type, fn), skipWaiting: async () => {} },
+    caches: { open: async () => cache, match: cache.match },
+    fetch: fetcher, URL,
+  });
+  return { cached, handlers, offline: () => { online = false; }, async dispatch(type, fields = {}) {
+    let completion;
+    handlers.get(type)({ ...fields, waitUntil: promise => { completion = promise; }, respondWith: promise => { completion = promise; } });
+    return await completion;
+  } };
+}
+
+test("Offline: installation caches the wallet and its initial scripts and styles", async () => {
+  const worker = serviceWorkerHarness();
+  await worker.dispatch("install");
+  assert.equal(worker.cached.has("https://wallet.test/_next/static/app.js"), true);
+  assert.equal(worker.cached.has("https://wallet.test/_next/static/app.css"), true);
+  worker.offline();
+  const response = await worker.dispatch("fetch", { request: { method: "GET", mode: "navigate", url: "https://wallet.test/" } });
+  assert.match(await response.text(), /<html>/);
+});
+
+test("Offline: share URLs and external resources are never cached", async () => {
+  const worker = serviceWorkerHarness();
+  await worker.dispatch("install");
+  await worker.dispatch("fetch", { request: { method: "GET", mode: "navigate", url: "https://wallet.test/?import=private-details" } });
+  await worker.dispatch("message", { data: { type: "CACHE_WALLET_ASSETS", urls: [
+    "https://wallet.test/?import=private-details", "https://external.test/script.js",
+    "https://wallet.test/_next/static/qr.js", "https://wallet.test/ocr/worker.min.js",
+  ] } });
+  assert.equal(worker.cached.has("https://wallet.test/?import=private-details"), false);
+  assert.equal(worker.cached.has("https://external.test/script.js"), false);
+  assert.equal(worker.cached.has("https://wallet.test/_next/static/qr.js"), true);
+  worker.offline();
+  const response = await worker.dispatch("fetch", { request: { method: "GET", mode: "cors", url: "https://wallet.test/ocr/worker.min.js" } });
+  assert.equal(await response.text(), "static asset");
 });

@@ -10,8 +10,8 @@
     "build": "next build",
     "start": "next start --port 5173 --hostname 127.0.0.1",
     "lint": "eslint .",
-    "postinstall": "node scripts/copy-ocr-assets.mjs",
-    "prebuild": "node scripts/copy-ocr-assets.mjs",
+    "postinstall": "node scripts/copy-ocr-assets.mjs && node scripts/build-logo-registry.mjs",
+    "prebuild": "node scripts/copy-ocr-assets.mjs && node scripts/build-logo-registry.mjs",
     "test": "node --test tests/vault-storage.test.mjs tests/share-formatter.test.mjs tests/card-scan.test.mjs"
   },
   "dependencies": {
@@ -31,6 +31,7 @@
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
     "eslint-config-next": "16.3.4",
+    "simple-icons": "16.35.0",
     "typescript": "5.9.3"
   },
   "type": "module"

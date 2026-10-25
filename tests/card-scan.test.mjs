@@ -5,6 +5,7 @@ import {
   luhnValid,
   parseCardText,
 } from "../lib/card-scan.ts";
+import { centerCardCrop } from "../lib/card-ocr.ts";
 
 test("Card scan: validates Luhn checksums", () => {
   assert.equal(luhnValid("4532 0151 1283 0366"), true);
@@ -123,4 +124,27 @@ MARY ANN LEE`);
 test("Card scan: returns null for text that is not a card", () => {
   assert.equal(parseCardText(""), null);
   assert.equal(parseCardText("HELLO\nTHERE"), null);
+});
+
+test("Card scan: numeric labels do not become digits in a card number", () => {
+  const card = parseCardText("VISA\nCARD NUMBER 4532 0151 1283 0366\nVALID FROM 01/24\nVALID THRU 09/28\nNAME JOHN DOE");
+  assert.equal(card.number, "4532015112830366");
+  assert.equal(card.numberValid, true);
+  assert.equal(card.expiryMonth, "09");
+  assert.equal(card.expiryYear, "28");
+  assert.equal(card.holder, "JOHN DOE");
+});
+
+test("Card scan: reads stacked digits and expiry printed beside the number", () => {
+  const stacked = parseCardText("VISA\n4532\n0151\n1283\n0366\n09/28\nJOHN DOE");
+  assert.equal(stacked.number, "4532015112830366");
+  const inline = parseCardText("VISA\n4532 0151 1283 0366 09/28\nJOHN DOE");
+  assert.equal(inline.number, "4532015112830366");
+});
+
+test("OCR crop follows the visible guide when video is cropped to a 4:3 preview", () => {
+  const crop = centerCardCrop(1920, 1080, 400, 300);
+  assert.equal(crop.width, 1440 * 0.86);
+  assert.equal(crop.x, (1920 - crop.width) / 2);
+  assert.equal(crop.height, crop.width / 1.586);
 });

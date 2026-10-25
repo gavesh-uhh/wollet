@@ -29,6 +29,7 @@ export interface BaseWalletItem {
   notes?: string;
   colorTheme: string; // e.g. "graphite", "ocean", "emerald", "rose", "sand", "steel", "peach", "lilac"
   pattern?: CardPattern;
+  logo?: string; // Bundled bank logo ID or a local PNG, encrypted with the item
   createdAt: number;
   updatedAt: number;
   customFields?: CustomField[];
@@ -86,6 +87,7 @@ export interface IdDocumentItem extends BaseWalletItem {
 export interface QrCodeItem extends BaseWalletItem {
   type: "qr_code";
   qrValue: string; // Raw text encoded in the saved QR code
+  imageDataUrl?: string; // Original code pixels, encrypted with the item
 }
 
 export interface SecureNoteItem extends BaseWalletItem {

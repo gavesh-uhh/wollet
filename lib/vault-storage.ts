@@ -88,6 +88,10 @@ export async function createNewVault(
   hasPasscode: boolean = false,
   customInitialItems?: WalletItem[]
 ): Promise<{ schema: EncryptedVaultStorageSchema; key: CryptoKey; data: VaultData }> {
+  // An unreadable vault is not an empty wallet. Never overwrite it on startup.
+  if (typeof localStorage !== "undefined" && localStorage.getItem(VAULT_STORAGE_KEY)) {
+    throw new Error("A wallet already exists on this device. Unlock or reset it first.");
+  }
   const saltBytes = getRandomBytes(16);
   const saltBase64 = bytesToBase64(saltBytes);
 
@@ -130,6 +134,9 @@ export async function createNewVault(
   };
 
   if (typeof localStorage !== "undefined") {
+    if (localStorage.getItem(VAULT_STORAGE_KEY)) {
+      throw new Error("A wallet was created in another window. Reload to open it.");
+    }
     localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(schema));
   }
 
@@ -141,9 +148,9 @@ export async function createNewVault(
  */
 export function getRawVaultSchema(): EncryptedVaultStorageSchema | null {
   if (typeof localStorage === "undefined") return null;
-  const raw = localStorage.getItem(VAULT_STORAGE_KEY);
-  if (!raw) return null;
   try {
+    const raw = localStorage.getItem(VAULT_STORAGE_KEY);
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && parsed.version === 2 && parsed.payloadCipher) {
       return parsed as EncryptedVaultStorageSchema;
@@ -207,6 +214,10 @@ export async function saveVaultData(
     throw new Error("No existing vault schema found to update.");
   }
 
+  if (!(await verifyPasscodeWithAuth(schema.authCipher, schema.authIv, key))) {
+    throw new Error("Your wallet key has changed. Reload and unlock before saving.");
+  }
+
   const jsonPayload = JSON.stringify(data);
   const { ciphertext, iv } = await encryptText(jsonPayload, key);
 
@@ -226,6 +237,9 @@ export async function saveVaultData(
   };
 
   if (typeof localStorage !== "undefined") {
+    if (localStorage.getItem(VAULT_STORAGE_KEY) !== JSON.stringify(schema)) {
+      throw new Error("Your wallet changed in another window. Reload before saving.");
+    }
     localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(updatedSchema));
   }
 
@@ -238,11 +252,21 @@ export async function saveVaultData(
 export async function changeVaultPasscode(
   currentKey: CryptoKey,
   newPasscode: string,
-  vaultData: VaultData
+  vaultData: VaultData,
+  hasPasscode: boolean = true
 ): Promise<{ newKey: CryptoKey; schema: EncryptedVaultStorageSchema }> {
   const schema = getRawVaultSchema();
   if (!schema) {
     throw new Error("Cannot change passcode: vault does not exist.");
+  }
+  if (hasPasscode && !/^\d{4,8}$/.test(newPasscode)) {
+    throw new Error("Use a PIN with 4 to 8 digits.");
+  }
+  if (!hasPasscode && newPasscode !== DEFAULT_DEVICE_PIN) {
+    throw new Error("Device mode requires the device key.");
+  }
+  if (!(await verifyPasscodeWithAuth(schema.authCipher, schema.authIv, currentKey))) {
+    throw new Error("Your wallet key has changed. Reload and unlock before changing the PIN.");
   }
 
   const newSaltBytes = getRandomBytes(16);
@@ -260,16 +284,20 @@ export async function changeVaultPasscode(
     authIv: newAuth.authIv,
     payloadCipher: ciphertext,
     payloadIv: iv,
-    hasPasscode: newPasscode !== DEFAULT_DEVICE_PIN && newPasscode.length > 0,
+    hasPasscode,
     updatedAt: Date.now(),
     metadata: {
       ...schema.metadata,
       itemCount: vaultData.items.length,
       categoryCounts: calculateCategoryCounts(vaultData.items),
+      autoLockMinutes: vaultData.preferences.autoLockMinutes,
     },
   };
 
   if (typeof localStorage !== "undefined") {
+    if (localStorage.getItem(VAULT_STORAGE_KEY) !== JSON.stringify(schema)) {
+      throw new Error("Your wallet changed in another window. Reload before changing the PIN.");
+    }
     localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(updatedSchema));
   }
 
@@ -300,5 +328,6 @@ export function exportEncryptedVaultFile(): string {
 export function resetLocalVault(): void {
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem(VAULT_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
   }
 }

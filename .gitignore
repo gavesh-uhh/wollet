@@ -8,6 +8,7 @@ next-env.d.ts
 
 # Copied from node_modules by scripts/copy-ocr-assets.mjs
 /public/ocr/
+/public/logos/registry/
 
 # Markdown notes and local tests
 *.md

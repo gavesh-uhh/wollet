@@ -59,7 +59,7 @@ const LABEL_WORDS = new Set([
 function cleanLine(line: string): string {
   return line
     .replace(/[“”‘’]/g, "'")
-    .replace(/[^A-Za-z0-9&.'\-/ ]+/g, " ")
+    .replace(/[^\p{L}0-9&.'\-/ ]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -111,7 +111,23 @@ export function detectCardNetwork(cardNumber: string): CreditCardItem["network"]
 
 function findCardNumber(lines: string[]): { value: string; valid: boolean } | null {
   let fallback = "";
+  // Some layouts print the number in stacked groups of four digits.
+  const candidates: string[] = [];
+  let groups: string[] = [];
+  const flush = () => {
+    if (groups.length >= 3) candidates.push(groups.join(" "));
+    groups = [];
+  };
   for (const line of lines) {
+    if (/^[0-9OoQqIl|!SsBbZzGg]{4}$/.test(line)) groups.push(line);
+    else flush();
+    // Ignore labels before repairing ambiguous letters as digits. Otherwise
+    // "CARD NUMBER" contributes spurious 8s and 1s to the card number.
+    const withoutExpiry = line.replace(/\b(?:0?[1-9]|1[0-2])\s*[/\\.-]\s*(?:\d{4}|\d{2})\b/g, " ");
+    candidates.push(...(withoutExpiry.match(/[0-9OoQqIl|!SsBbZzGg][0-9OoQqIl|!SsBbZzGg -]{11,}/g) || []));
+  }
+  flush();
+  for (const line of candidates) {
     const actualDigits = (line.match(/\d/g) || []).length;
     const run = digitsOnly(normaliseNumericLine(line));
     if (actualDigits < 8 || run.length < 13) continue;
@@ -147,6 +163,11 @@ function findCardNumber(lines: string[]): { value: string; valid: boolean } | nu
 }
 
 function findExpiry(text: string): { month: string; year: string } | null {
+  const lines = text.split("\n");
+  const labelled = lines.findIndex((line) => /\b(THRU|THROUGH|UNTIL|EXPIRES|EXPIRY|EXPIRATION)\b/.test(line));
+  text = labelled >= 0
+    ? [lines[labelled], lines[labelled + 1] || "", ...lines.filter((_, i) => i !== labelled && i !== labelled + 1)].join("\n")
+    : lines.filter((line) => !/\b(FROM|ISSUED|BIRTH|DOB)\b/.test(line)).join("\n");
   const numeric = text.match(
     /(?:^|\D)(0?[1-9]|1[0-2])\s*[/\\\-.]\s*(\d{2}|\d{4})(?!\d)/
   );
@@ -167,12 +188,13 @@ function findExpiry(text: string): { month: string; year: string } | null {
 function findHolder(lines: string[]): string {
   let candidate = "";
   for (const line of lines) {
-    const words = line.split(" ").filter(Boolean);
+    const name = line.replace(/^(?:CARDHOLDER(?: NAME)?|HOLDER(?: NAME)?|FULL NAME|NAME)\s+/, "");
+    const words = name.split(" ").filter(Boolean);
     if (words.length < 2 || words.length > 4) continue;
     if (line.length < 5 || line.length > 40 || /\d/.test(line)) continue;
-    if (!words.every((word) => /^[A-Z][A-Z'.-]{0,24}$/.test(word))) continue;
+    if (!words.every((word) => /^\p{L}[\p{L}'.-]{0,24}$/u.test(word))) continue;
     if (words.some((word) => LABEL_WORDS.has(word.replace(/[.'-]/g, "")))) continue;
-    candidate = line;
+    candidate = name;
   }
   return candidate;
 }

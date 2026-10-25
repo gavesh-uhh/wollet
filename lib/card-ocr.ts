@@ -4,6 +4,7 @@
  */
 
 import type TesseractNamespace from "tesseract.js";
+import { parseCardText } from "./card-scan.ts";
 
 type Tesseract = typeof TesseractNamespace;
 type OcrWorker = Awaited<ReturnType<Tesseract["createWorker"]>>;
@@ -24,9 +25,13 @@ const MAX_IMAGE_SIDE = 1600;
 const CARD_ASPECT = 1.586;
 
 /** The area covered by the on-screen card guide, in source pixels. */
-export function centerCardCrop(width: number, height: number): ScanCrop {
-  const cropWidth = width * 0.86;
-  const cropHeight = Math.min(height * 0.94, cropWidth / CARD_ASPECT);
+export function centerCardCrop(width: number, height: number, viewWidth = width, viewHeight = height): ScanCrop {
+  // The preview uses object-fit: cover; map its guide back to source pixels.
+  const coverScale = Math.max(viewWidth / width, viewHeight / height);
+  const visibleWidth = viewWidth / coverScale;
+  const visibleHeight = viewHeight / coverScale;
+  const cropWidth = visibleWidth * 0.86;
+  const cropHeight = Math.min(visibleHeight * 0.94, cropWidth / CARD_ASPECT);
   return {
     x: (width - cropWidth) / 2,
     y: (height - cropHeight) / 2,
@@ -35,7 +40,7 @@ export function centerCardCrop(width: number, height: number): ScanCrop {
   };
 }
 
-/** Draws the selected area at a useful size, in grayscale, for OCR. */
+/** Keep the original colors for the first OCR pass; preprocessing can erase thin text. */
 export function renderCardCanvas(
   source: CanvasImageSource,
   sourceWidth: number,
@@ -62,7 +67,7 @@ export function renderCardCanvas(
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return canvas;
+  if (!context) throw new Error("Could not prepare card image.");
 
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
@@ -78,21 +83,44 @@ export function renderCardCanvas(
     height
   );
 
-  const image = context.getImageData(0, 0, width, height);
+  return canvas;
+}
+
+/** Contrast-normalized fallback, using percentiles so glare does not dominate. */
+export function enhanceCardCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Could not prepare card image.");
+  context.drawImage(source, 0, 0);
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
   const pixels = image.data;
+  const histogram = new Uint32Array(256);
   let luminanceSum = 0;
   for (let i = 0; i < pixels.length; i += 4) {
-    luminanceSum +=
-      0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    const luminance = Math.round(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]);
+    luminanceSum += luminance;
+    histogram[luminance]++;
   }
   const average = luminanceSum / (pixels.length / 4);
   const invert = average < 110;
+  const percentile = (fraction: number) => {
+    let count = 0;
+    for (let value = 0; value < 256; value++) {
+      count += histogram[value];
+      if (count >= pixels.length / 4 * fraction) return value;
+    }
+    return 255;
+  };
+  const low = percentile(0.02);
+  const range = Math.max(32, percentile(0.98) - low);
 
   for (let i = 0; i < pixels.length; i += 4) {
     let luminance =
       0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    luminance = Math.max(0, Math.min(255, (luminance - low) * 255 / range));
     if (invert) luminance = 255 - luminance;
-    luminance = Math.max(0, Math.min(255, (luminance - 128) * 1.2 + 128));
     pixels[i] = luminance;
     pixels[i + 1] = luminance;
     pixels[i + 2] = luminance;
@@ -106,6 +134,7 @@ export async function recognizeCard(
   onProgress?: (event: OcrProgress) => void,
   signal?: AbortSignal
 ): Promise<string> {
+  if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
   const tesseractModule = await import("tesseract.js");
   const tesseract = ((tesseractModule as { default?: Tesseract }).default ??
     tesseractModule) as Tesseract;
@@ -130,8 +159,20 @@ export async function recognizeCard(
       tessedit_pageseg_mode: tesseract.PSM.SPARSE_TEXT,
       preserve_interword_spaces: "1",
     });
-    const { data } = await worker.recognize(canvas);
-    return data.text ?? "";
+    const first = (await worker.recognize(canvas)).data;
+    if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+    const score = (text: string, confidence: number) => {
+      const card = parseCardText(text);
+      if (!card) return confidence / 100;
+      return (card.number ? 3 : 0) + (card.numberValid ? 5 : 0) +
+        (card.holder ? 2 : 0) + (card.expiryMonth ? 1 : 0) + (card.issuer ? 1 : 0) + confidence / 100;
+    };
+    const parsed = parseCardText(first.text);
+    if (first.confidence >= 85 && parsed?.numberValid && parsed.holder && parsed.expiryMonth) return first.text;
+    await worker.setParameters({ tessedit_pageseg_mode: tesseract.PSM.AUTO });
+    const second = (await worker.recognize(enhanceCardCanvas(canvas))).data;
+    if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+    return score(second.text, second.confidence) > score(first.text, first.confidence) ? second.text : first.text;
   } finally {
     signal?.removeEventListener("abort", cancel);
     await worker?.terminate().catch(() => {});

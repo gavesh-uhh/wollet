@@ -7,7 +7,7 @@
  * and blocked from QR broadcasting.
  */
 
-import type { BankAccountItem, SafeSharePayload, UpiHandleItem, WalletItem } from "./vault-types.ts";
+import type { BankAccountItem, QrCodeItem, SafeSharePayload, UpiHandleItem, WalletItem } from "./vault-types.ts";
 
 /**
  * Returns true if an item type is designated safe for QR code sharing.
@@ -31,13 +31,14 @@ export function isSafeForQrSharing(item: WalletItem): boolean {
  * Wraps any scanned QR payload as a wallet card draft.
  * Returns null for an empty payload.
  */
-export function createQrCardDraft(value: string): Partial<WalletItem> | null {
-  const qrValue = value.trim();
-  if (!qrValue) return null;
+export function createQrCardDraft(value: string, imageDataUrl?: string): Partial<QrCodeItem> | null {
+  // Whitespace may be significant in signed tickets and campus payloads.
+  if (!value.trim() && !imageDataUrl) return null;
   return {
     type: "qr_code",
     title: "Scanned QR",
-    qrValue,
+    qrValue: value,
+    ...(imageDataUrl ? { imageDataUrl } : {}),
   };
 }
 
@@ -165,7 +166,7 @@ export function parseScannedQr(scannedText: string): ScannedImportResult {
       const url = new URL(trimmed);
       const importParam = url.searchParams.get("import");
       if (importParam) {
-        jsonString = decodeURIComponent(importParam);
+        jsonString = importParam; // URLSearchParams already decoded it once.
       }
     } catch {
       // Continue with raw string
