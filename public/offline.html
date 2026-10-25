@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>Wollet</title>
+  <style>
+    @font-face {
+      font-family: "Sora";
+      font-weight: 100 800;
+      font-display: swap;
+      src: url("/fonts/sora-latin-variable.woff2") format("woff2");
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0a0a0a;
+      color: #ededed;
+      font-family: "Sora", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .offline-box {
+      max-width: 420px;
+      width: 100%;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 16px;
+      padding: 32px 24px;
+    }
+    h1 { font-size: 24px; margin-bottom: 12px; }
+    p { font-size: 13px; color: #888; line-height: 1.6; margin-bottom: 24px; }
+    button {
+      background: #ededed;
+      color: #000;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-box">
+    <h1>Wollet Digital Wallet</h1>
+    <p>You appear to be offline. Wollet is offline-first: once loaded, all your cards, bank accounts, and QR features work completely without an internet connection.</p>
+    <button onclick="window.location.reload()">Reload Wallet</button>
+  </div>
+</body>
+</html>
